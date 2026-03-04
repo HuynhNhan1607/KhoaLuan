@@ -1,0 +1,33 @@
+﻿============================================================
+ANALYSIS: Test Point (x=150, y=0, z=200, pitch=0)
+============================================================
+[1] Cylindrical: R=150.0mm, Z=200mm, phi=0deg
+[2] Wrist center: R=-30.0mm, Z=200.0mm
+    (d5=180.0mm is VERY LONG - tool offset)
+[3] Distance J1->Wrist: 177.6mm
+[4] Arm limits: min=40.0mm, max=170.0mm
+    *** ERROR: 177.6 > 170.0 (OUT OF REACH) ***
+[5] IK Result:
+    FAILED: reach
+
+[6] Test different pitch angles:
+    phi= -90: FAIL(reach) dist=385.4
+    phi= -60: FAIL(reach) dist=336.3
+    phi= -45: FAIL(reach) dist=303.1
+    phi= -30: FAIL(reach) dist=265.1
+    phi=  +0: FAIL(reach) dist=177.6
+    phi= +30: FAIL(limits) J1= 132.2, J2= 215.8, J3=  66.3
+    phi= +45: FAIL(limits) J1=  94.7, J2= 245.9, J3= -16.1
+    phi= +60: FAIL(limits) J1=  53.2, J2= 235.8, J3= -62.6
+    phi= +90: FAIL(limits) J1=  19.6, J2= 147.8, J3= -38.2
+
+============================================================
+CONCLUSION:
+============================================================
+With d5=180.0mm (tool length), wrist center must be at R=-30.0mm
+when TCP is at R=150mm with phi=0 (horizontal).
+
+This means wrist is at NEGATIVE R = -30.0mm!
+The arm cannot reach behind itself.
+
+SOLUTION: Use phi=-45 to -90 (pointing downward) so wrist is in front.

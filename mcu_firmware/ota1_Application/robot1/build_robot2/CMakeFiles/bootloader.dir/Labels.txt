@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+/home/huynhan1607/Multiple_Mobile_Robot/mcu_firmware/ota1_Application/robot1/build_robot2/CMakeFiles/bootloader
+/home/huynhan1607/Multiple_Mobile_Robot/mcu_firmware/ota1_Application/robot1/build_robot2/CMakeFiles/bootloader.rule
+/home/huynhan1607/Multiple_Mobile_Robot/mcu_firmware/ota1_Application/robot1/build_robot2/CMakeFiles/bootloader-complete.rule
+/home/huynhan1607/Multiple_Mobile_Robot/mcu_firmware/ota1_Application/robot1/build_robot2/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
+/home/huynhan1607/Multiple_Mobile_Robot/mcu_firmware/ota1_Application/robot1/build_robot2/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+/home/huynhan1607/Multiple_Mobile_Robot/mcu_firmware/ota1_Application/robot1/build_robot2/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+/home/huynhan1607/Multiple_Mobile_Robot/mcu_firmware/ota1_Application/robot1/build_robot2/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+/home/huynhan1607/Multiple_Mobile_Robot/mcu_firmware/ota1_Application/robot1/build_robot2/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+/home/huynhan1607/Multiple_Mobile_Robot/mcu_firmware/ota1_Application/robot1/build_robot2/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+/home/huynhan1607/Multiple_Mobile_Robot/mcu_firmware/ota1_Application/robot1/build_robot2/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule

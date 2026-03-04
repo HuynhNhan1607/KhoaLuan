@@ -1,0 +1,24 @@
+# Build directories
+build/
+**/build/
+
+server/kinematics_logs/
+server/logs/
+
+# ESP-IDF specific
+sdkconfig.old
+**/.vscode/
+**/.devcontainer/
+
+# Python
+__pycache__/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+
+.venv
