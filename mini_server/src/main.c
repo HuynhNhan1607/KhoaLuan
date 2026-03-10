@@ -20,31 +20,38 @@ extern pthread_mutex_t g_ekf_mutex;
 static struct gpiod_chip *chip = NULL;
 struct gpiod_line *line = NULL;
 
-static void on_sigint(int sig) {
+static void on_sigint(int sig)
+{
   (void)sig;
   g_running = false;
-  if (line) {
+  if (line)
+  {
     gpiod_line_release(line);
   }
-  if (chip) {
+  if (chip)
+  {
     gpiod_chip_close(chip);
   }
 }
 
-static void gpio_init(void) {
+static void gpio_init(void)
+{
   chip = gpiod_chip_open_by_name("gpiochip1");
-  if (!chip) {
+  if (!chip)
+  {
     perror("Failed to open GPIO chip");
     return;
   }
   line = gpiod_chip_get_line(chip, ESP_EN);
-  if (!line) {
+  if (!line)
+  {
     perror("Failed to get GPIO line");
     gpiod_chip_close(chip);
     chip = NULL;
     return;
   }
-  if (gpiod_line_request_output(line, "ESP_EN", 0) < 0) {
+  if (gpiod_line_request_output(line, "ESP_EN", 0) < 0)
+  {
     perror("Failed to request GPIO line as output");
     gpiod_chip_close(chip);
     chip = NULL;
@@ -55,8 +62,10 @@ static void gpio_init(void) {
   printf("GPIO initialized\n");
 }
 
-int main(void) {
+int main(void)
+{
   signal(SIGINT, on_sigint);
+  signal(SIGPIPE, SIG_IGN); /* Ignore broken pipe - handle via send() return value */
 
   gpio_init();
   trajectory_init();
@@ -64,21 +73,24 @@ int main(void) {
   pthread_t th_server, th_laptop_server, th_localize, th_optical_flow;
 
   // Start server thread (for ESP32 to connect)
-  if (pthread_create(&th_server, NULL, server_thread, NULL) != 0) {
+  if (pthread_create(&th_server, NULL, server_thread, NULL) != 0)
+  {
     perror("Failed to create server thread");
     return 1;
   }
 
   // Start laptop server thread (previously client_thread)
   if (pthread_create(&th_laptop_server, NULL, laptop_server_thread, NULL) !=
-      0) {
+      0)
+  {
     perror("Failed to create laptop server thread");
     g_running = false;
     pthread_join(th_server, NULL);
     return 1;
   }
 
-  if (pthread_create(&th_localize, NULL, localize_thread, NULL) != 0) {
+  if (pthread_create(&th_localize, NULL, localize_thread, NULL) != 0)
+  {
     perror("Failed to create localize thread");
     g_running = false;
     pthread_join(th_server, NULL);
@@ -88,7 +100,8 @@ int main(void) {
 
   // Start Optical Flow thread
   if (pthread_create(&th_optical_flow, NULL, optical_flow_uart_thread, NULL) !=
-      0) {
+      0)
+  {
     perror("Failed to create optical flow thread");
     g_running = false;
     pthread_join(th_server, NULL);

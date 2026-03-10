@@ -46,7 +46,7 @@ class FormationPlanner:
     # 1 robot: use robot_id=1 at 270° (bottom) - approaches from below, faces up (θ=0)
     # No rotation needed since initial heading (North) matches target heading
     DEFAULT_ANGLES_1 = {
-        1: 270.0    # Bottom - go straight to object, no rotation required
+        1: 180.0    # Bottom - go straight to object, no rotation required
     }
     
     def __init__(self, num_robots: int = 3, grip_radius: float = 0.4):

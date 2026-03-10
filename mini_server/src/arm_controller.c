@@ -26,13 +26,13 @@ static void send_servo_cmd(int channel, double deg)
   char cmd[128];
   snprintf(cmd, sizeof(cmd), "{\"cmd\":\"servo\",\"ch\":%d,\"deg\":%.1f}\n",
            channel, deg);
-  client_manager_broadcast(cmd, strlen(cmd));
+  client_manager_broadcast_to_arm(cmd, strlen(cmd));
 }
 
 static void send_servo_off_all(void)
 {
   const char *cmd = "{\"cmd\":\"servo_off\",\"all\":true}\n";
-  client_manager_broadcast(cmd, strlen(cmd));
+  client_manager_broadcast_to_arm(cmd, strlen(cmd));
 }
 
 /**
@@ -63,7 +63,7 @@ static void send_servo_multi(const int *channels, const double *angles,
 
   pos += snprintf(cmd + pos, sizeof(cmd) - pos, "]}\n");
 
-  client_manager_broadcast(cmd, strlen(cmd));
+  client_manager_broadcast_to_arm(cmd, strlen(cmd));
 }
 
 /**

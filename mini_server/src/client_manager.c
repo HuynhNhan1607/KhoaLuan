@@ -96,10 +96,13 @@ void client_manager_broadcast(const char *buffer, int len)
         if (clients[i].active)
         {
             active_count++;
-            if (send(clients[i].sock, buffer, len, 0) < 0)
+            if (send(clients[i].sock, buffer, len, MSG_NOSIGNAL) < 0)
             {
-                printf("[CLIENT_MANAGER] Error sending to %s:%d\n",
+                printf("[CLIENT_MANAGER] Error sending to %s:%d - removing dead client\n",
                        clients[i].ip, clients[i].port);
+                close(clients[i].sock);
+                clients[i].sock = -1;
+                clients[i].active = false;
             }
         }
     }
@@ -123,14 +126,42 @@ void client_manager_broadcast_to_motor(const char *buffer, int len)
             const char *last_octet = strrchr(clients[i].ip, '.');
             if (last_octet != NULL && strcmp(last_octet, ".3") == 0)
             {
-                if (send(clients[i].sock, buffer, len, 0) < 0)
+                if (send(clients[i].sock, buffer, len, MSG_NOSIGNAL) < 0)
                 {
-                    printf("[CLIENT_MANAGER] Error sending to motor %s:%d\n",
+                    printf("[CLIENT_MANAGER] Error sending to motor %s:%d - removing dead client\n",
                            clients[i].ip, clients[i].port);
+                    close(clients[i].sock);
+                    clients[i].sock = -1;
+                    clients[i].active = false;
                 }
                 else
                 {
                     sent_count++;
+                }
+            }
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+}
+
+void client_manager_broadcast_to_arm(const char *buffer, int len)
+{
+    // Only send to ESP32 ARM Controller (IP ending with .5)
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < MAX_CLIENTS; i++)
+    {
+        if (clients[i].active)
+        {
+            const char *last_octet = strrchr(clients[i].ip, '.');
+            if (last_octet != NULL && strcmp(last_octet, ".5") == 0)
+            {
+                if (send(clients[i].sock, buffer, len, MSG_NOSIGNAL) < 0)
+                {
+                    printf("[CLIENT_MANAGER] Error sending to arm %s:%d - removing dead client\n",
+                           clients[i].ip, clients[i].port);
+                    close(clients[i].sock);
+                    clients[i].sock = -1;
+                    clients[i].active = false;
                 }
             }
         }

@@ -165,11 +165,11 @@ class ServerGUI:
         ttk.Entry(obj_grid, textvariable=self.approach_vars['obj_y'], width=8).grid(row=0, column=3, padx=2)
         
         ttk.Label(obj_grid, text="Length:").grid(row=0, column=4, padx=3)
-        self.approach_vars['obj_length'] = tk.StringVar(value="0.3")
+        self.approach_vars['obj_length'] = tk.StringVar(value="0.2")
         ttk.Entry(obj_grid, textvariable=self.approach_vars['obj_length'], width=6).grid(row=0, column=5, padx=2)
         
         ttk.Label(obj_grid, text="Width:").grid(row=0, column=6, padx=3)
-        self.approach_vars['obj_width'] = tk.StringVar(value="0.3")
+        self.approach_vars['obj_width'] = tk.StringVar(value="0.1")
         ttk.Entry(obj_grid, textvariable=self.approach_vars['obj_width'], width=6).grid(row=0, column=7, padx=2)
         
         ttk.Button(obj_grid, text="Set", command=self._set_object_position).grid(row=0, column=8, padx=5)
@@ -267,7 +267,7 @@ class ServerGUI:
         ttk.Entry(dest_row, textvariable=self.approach_vars['dest_x'], width=8).pack(side="left", padx=2)
         
         ttk.Label(dest_row, text="Y:").pack(side="left", padx=3)
-        self.approach_vars['dest_y'] = tk.StringVar(value="6.0")
+        self.approach_vars['dest_y'] = tk.StringVar(value="4.0")
         ttk.Entry(dest_row, textvariable=self.approach_vars['dest_y'], width=8).pack(side="left", padx=2)
         
         ttk.Button(dest_row, text="Set", command=self._set_destination).pack(side="left", padx=5)
