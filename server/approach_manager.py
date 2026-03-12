@@ -323,7 +323,7 @@ class ApproachManager:
         
         # Update GUI arrival indicator
         if hasattr(server.gui, 'update_arrival_status'):
-            server.gui.update_arrival_status(robot_id, True)
+            server.gui.update_arrival_status(robot_id, 'arrived')
         
         # Check if all robots have arrived
         if self.check_all_arrived():

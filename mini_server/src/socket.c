@@ -652,6 +652,16 @@ void *laptop_server_thread(void *arg)
                 // Forward to json_handler for processing
                 parse_json_message(buffer, valread);
               }
+              // Check for docking commands - forward to json_handler
+              else if (strstr(buffer, "\"cmd\":\"start_docking\"") ||
+                       strstr(buffer, "\"cmd\": \"start_docking\"") ||
+                       strstr(buffer, "\"cmd\":\"stop_docking\"") ||
+                       strstr(buffer, "\"cmd\": \"stop_docking\""))
+              {
+                printf("[SOCKET] Received docking command, forwarding to "
+                       "json_handler\n");
+                parse_json_message(buffer, valread);
+              }
               else
               {
                 // Other control commands - broadcast to ESP32

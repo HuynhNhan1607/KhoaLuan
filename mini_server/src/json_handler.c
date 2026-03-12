@@ -22,6 +22,7 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+#include "docking.h"
 
 #define QUEUE_SIZE 100
 #define MAX_JSON_SIZE 512
@@ -1183,9 +1184,39 @@ void parse_json_message(const char *json_str, int length)
         printf("[GRIP] Robot EKF: pos(%.3f, %.3f) theta=%.2f rad\n", robot_x,
                robot_y, robot_theta);
 
-        // Execute grip
-        bool success = arm_execute_grip(robot_x, robot_y, robot_theta, obj_x,
-                                        obj_y, obj_length, obj_width, side);
+        bool success = false;
+
+#if ENABLE_DOCKING
+        if (docking_is_complete())
+        {
+          // === DOCKING MODE: Grip at fixed distance ===
+          // VL53L0X đã docking chính xác, dùng khoảng cách cố định
+          // Body frame: X=0 (ngay tâm), Y=dock_distance (trước mặt)
+          double grip_dist_m = (double)DOCK_FIXED_GRIP_DISTANCE_MM / 1000.0;
+
+          // Convert body offset to global position:
+          // obj_global = robot_pos + R(theta) * [grip_dist; 0]
+          // (robot nhìn thẳng về vật, offset theo trục X body = hướng trước)
+          double dock_obj_x = robot_x + cos(robot_theta) * grip_dist_m;
+          double dock_obj_y = robot_y + sin(robot_theta) * grip_dist_m;
+
+          printf("[GRIP] DOCKING MODE: Fixed grip at distance %d mm\n",
+                 DOCK_FIXED_GRIP_DISTANCE_MM);
+          printf("[GRIP] Fixed obj pos: (%.3f, %.3f) [body offset: X=%.3f, Y=0]\n",
+                 dock_obj_x, dock_obj_y, grip_dist_m);
+
+          success = arm_execute_grip(robot_x, robot_y, robot_theta,
+                                    dock_obj_x, dock_obj_y,
+                                    obj_length, obj_width, side);
+        }
+        else
+#endif // ENABLE_DOCKING
+        {
+          // === ORIGINAL MODE: Grip using server object_pos ===
+          printf("[GRIP] NORMAL MODE: Grip using server position\n");
+          success = arm_execute_grip(robot_x, robot_y, robot_theta, obj_x,
+                                    obj_y, obj_length, obj_width, side);
+        }
 
         // Lock transport offset for Virtual Structure mode (Phase 2)
         // centroid = object center position
@@ -1285,6 +1316,41 @@ void parse_json_message(const char *json_str, int length)
         send_to_upstream_server(err, strlen(err));
       }
     }
+
+    // ========== START DOCKING (for testing VL53L0X docking independently) ==========
+#if ENABLE_DOCKING
+    if (cmd_json && cJSON_IsString(cmd_json) &&
+        strcmp(cmd_json->valuestring, "start_docking") == 0)
+    {
+      printf("[DOCKING] Received start_docking test command from laptop\n");
+
+      if (docking_is_active())
+      {
+        printf("[DOCKING] Docking already active — resetting\n");
+        docking_stop();
+      }
+
+      docking_start();
+
+      const char *result =
+          "{\"type\":\"control\",\"status\":\"docking_started\","
+          "\"cmd\":\"start_docking_result\"}\n";
+      send_to_upstream_server(result, strlen(result));
+    }
+
+    // Stop docking test
+    if (cmd_json && cJSON_IsString(cmd_json) &&
+        strcmp(cmd_json->valuestring, "stop_docking") == 0)
+    {
+      printf("[DOCKING] Received stop_docking command from laptop\n");
+      docking_stop();
+
+      const char *result =
+          "{\"type\":\"control\",\"status\":\"docking_stopped\","
+          "\"cmd\":\"stop_docking_result\"}\n";
+      send_to_upstream_server(result, strlen(result));
+    }
+#endif // ENABLE_DOCKING
   }
   cJSON_Delete(json);
 }

@@ -6,6 +6,7 @@
 #include "localize.h"          // For current pose if needed directly, though we might inject it
 #include "socket.h"            // For send_to_laptop_clients
 #include "sys_config.h"        // For ENABLE_THETA_TRACKING
+#include "docking.h"           // For VL53L0X docking
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -54,6 +55,23 @@ void trajectory_init(void)
   g_trajectory.current_index = 0;
   g_trajectory.active = false;
   pthread_mutex_unlock(&g_traj_mutex);
+
+  // Always start the execution thread so docking_update() runs
+  // even when no trajectory is loaded (standalone docking test).
+  if (!g_thread_running)
+  {
+    g_thread_running = true;
+    if (pthread_create(&g_traj_thread, NULL, trajectory_thread_func, NULL) != 0)
+    {
+      printf("[TRAJ] Failed to create execution thread\n");
+      g_thread_running = false;
+    }
+    else
+    {
+      pthread_detach(g_traj_thread);
+      printf("[TRAJ] Execution thread started\n");
+    }
+  }
 }
 
 void trajectory_set_current_pose(float x, float y, float theta)
@@ -275,6 +293,75 @@ void *trajectory_thread_func(void *arg)
     double start_time = g_trajectory.start_time_epoch;
     pthread_mutex_unlock(&g_traj_mutex);
 
+    // ╔══════════════════════════════════════════════════════════════════════╗
+    // ║  DOCKING BLOCK (A): Run docking loop if active                     ║
+    // ║                                                                    ║
+    // ║  Flow: trajectory PID → acceptance zone → docking_start() [Block B]║
+    // ║        → THIS BLOCK runs docking_update() every cycle              ║
+    // ║        → when docking completes, sends "arrived" to server         ║
+    // ║        → server receives "arrived" → sends execute_grip            ║
+    // ║                                                                    ║
+    // ║  Also handles standalone docking test (no trajectory loaded):      ║
+    // ║        → server sends start_docking command → docking_start()      ║
+    // ║        → THIS BLOCK runs docking_update() every cycle              ║
+    // ║        → when completes, sends "docking_complete" (UI only)        ║
+    // ╚══════════════════════════════════════════════════════════════════════╝
+#if ENABLE_DOCKING == 1
+    if (docking_is_active())
+    {
+      // Get current heading for body→global frame conversion
+      float dock_theta;
+      pthread_mutex_lock(&g_ekf_mutex);
+      dock_theta = (float)g_ekf.x[4];
+      pthread_mutex_unlock(&g_ekf_mutex);
+
+      // Run one cycle of the VL53L0X docking state machine
+      docking_update(dock_theta);
+
+      // Check if docking just completed
+      if (docking_is_complete())
+      {
+        printf("[TRAJ] Docking complete!\n");
+
+        if (count > 0)
+        {
+          // Full flow — send "arrived", then SHUTDOWN docking completely
+          // so transport phase has zero interference from VL53L0X
+          const char *msg =
+              "{\"type\": \"control\", \"status\": \"arrived\"}\n";
+          send_to_laptop_clients(msg, strlen(msg));
+          printf("[TRAJ] Sent 'arrived' → server will send execute_grip\n");
+
+          // Tắt hoàn toàn: đóng I2C, giải phóng GPIO, không đọc sensor nữa
+          docking_shutdown();
+          printf("[TRAJ] Docking shutdown — sensors released for transport\n");
+        }
+        else
+        {
+          // Standalone test — chỉ cập nhật UI, không shutdown
+          const char *msg =
+              "{\"type\": \"control\", \"status\": \"docking_complete\"}\n";
+          send_to_laptop_clients(msg, strlen(msg));
+          printf("[TRAJ] Sent 'docking_complete' (standalone test)\n");
+        }
+
+        // Reset PID state for next trajectory
+        first_run_pid = true;
+        sum_err_x = 0.0f;
+        sum_err_y = 0.0f;
+        smooth_cmd_vx = 0.0f;
+        smooth_cmd_vy = 0.0f;
+        filtered_d_meas_x = 0.0f;
+        filtered_d_meas_y = 0.0f;
+        goal_reached_start_time = 0;
+      }
+
+      usleep(DOCKING_LOOP_DELAY_US);
+      continue; // Docking controls motors — skip PID entirely
+    }
+#endif // ENABLE_DOCKING
+
+    // --- IDLE CHECK: No trajectory loaded ---
     if (!active || count == 0)
     {
       usleep(100000); // Sleep 100ms when idle
@@ -282,14 +369,10 @@ void *trajectory_thread_func(void *arg)
     }
 
     // === ROBOT2: Skip trajectory execution during transport mode ===
-    // Robot2 is controlled by formation_manager (follow Robot1)
-    // NOT by trajectory_executor during transport phase
 #if ROBOT_ID == 2
     if (formation_is_transport_active())
     {
-      // Robot2 trong transport mode: formation_manager đang control
-      // Trajectory executor không can thiệp
-      usleep(100000); // Sleep 100ms
+      usleep(100000);
       continue;
     }
 #endif
@@ -344,8 +427,6 @@ void *trajectory_thread_func(void *arg)
 #endif
 
     // === VIRTUAL STRUCTURE: For Pure Pursuit search, use centroid position ===
-    // During transport mode, trajectory contains CENTROID positions
-    // So we need to compare centroid positions, not robot positions
     float search_x = cur_x;
     float search_y = cur_y;
     double transport_offset_x = 0.0, transport_offset_y = 0.0;
@@ -353,21 +434,14 @@ void *trajectory_thread_func(void *arg)
 
     if (is_transport)
     {
-      // Get transport offset (robot_pos - centroid at lock time)
       if (formation_get_transport_offset(&transport_offset_x, &transport_offset_y))
       {
-        // Convert robot position to centroid position for search
-        // centroid = robot_pos - offset
         search_x = cur_x - (float)transport_offset_x;
         search_y = cur_y - (float)transport_offset_y;
       }
     }
 
     // --- PURE PURSUIT: Find Lookahead Point ---
-    // Search forward from current_index to find the first point beyond
-    // lookahead_dist. This allows the robot to "skip" dense points and maintain
-    // smooth velocity.
-    // NOTE: During transport, we search using centroid position (search_x, search_y)
     int lookahead_idx = current_idx;
     for (int i = current_idx; i < count; i++)
     {
@@ -381,19 +455,14 @@ void *trajectory_thread_func(void *arg)
         lookahead_idx = i;
         break;
       }
-      // If we reach here, the point is within lookahead_dist.
-      // Update current_index to "consume" passed waypoints.
-      lookahead_idx = i; // Keep advancing until we find one outside
+      lookahead_idx = i;
     }
 
-    // If all remaining points are within lookahead, target the final point.
     if (lookahead_idx >= count)
     {
       lookahead_idx = count - 1;
     }
 
-    // Update current_index to the lookahead point (or just before it)
-    // This prevents re-scanning already passed points.
     pthread_mutex_lock(&g_traj_mutex);
     if (lookahead_idx > g_trajectory.current_index)
     {
@@ -401,31 +470,23 @@ void *trajectory_thread_func(void *arg)
     }
     pthread_mutex_unlock(&g_traj_mutex);
 
-    // Get the lookahead target point (this is CENTROID position from trajectory)
     TrajectoryPoint target = g_trajectory.points[lookahead_idx];
 
     // === VIRTUAL STRUCTURE: Convert centroid target to robot target ===
-    // During transport mode, trajectory contains centroid (object) positions
-    // Robot target = centroid + transport_offset (locked at grip time)
     if (is_transport)
     {
-      // Update centroid target in formation manager
       formation_set_centroid_target((double)target.x, (double)target.y);
-
-      // Get robot's actual target position = centroid + offset
       double robot_target_x, robot_target_y;
       if (formation_get_robot_target(&robot_target_x, &robot_target_y))
       {
         target.x = (float)robot_target_x;
         target.y = (float)robot_target_y;
-        // theta is ignored - will use locked theta
       }
     }
 
     // --- STOP CONDITION: Check POSITION (and THETA if enabled) ---
     TrajectoryPoint final_point = g_trajectory.points[count - 1];
 
-    // For transport mode, also convert final point to robot position
     if (is_transport)
     {
       final_point.x += (float)transport_offset_x;
@@ -440,11 +501,9 @@ void *trajectory_thread_func(void *arg)
     if (distance_to_final < acceptance_radius)
     {
 #if ENABLE_THETA_TRACKING
-      // Theta tracking enabled: check both position AND theta
       if (final_point.has_theta)
       {
         float theta_err = cur_theta - final_point.theta;
-        // Normalization removed as per user request
         if (fabs(theta_err) < ACCEPTANCE_ANGLE)
         {
           goal_reached = true;
@@ -452,17 +511,39 @@ void *trajectory_thread_func(void *arg)
       }
       else
       {
-        // No theta in trajectory, only check distance
         goal_reached = true;
       }
 #else
-      // Theta tracking disabled: only check position distance
       goal_reached = true;
 #endif
     }
 
     if (goal_reached)
     {
+      // ╔══════════════════════════════════════════════════════════════════╗
+      // ║  DOCKING BLOCK (B): Start docking when entering acceptance zone║
+      // ║                                                                ║
+      // ║  Robot đã chạy trajectory PID tới gần vật (acceptance zone).   ║
+      // ║  Bây giờ dừng PID, bật VL53L0X sensor docking.                ║
+      // ║  Vòng lặp tiếp theo sẽ vào Block (A) ở trên để chạy docking. ║
+      // ╚══════════════════════════════════════════════════════════════════╝
+#if ENABLE_DOCKING == 1
+      if (!docking_is_active() && !docking_is_complete())
+      {
+        printf("[TRAJ] Entered acceptance zone — starting VL53L0X docking\n");
+        printf("[TRAJ] Cur(%.2f, %.2f) Final(%.2f, %.2f) Dist:%.3f\n",
+               cur_x, cur_y, final_point.x, final_point.y, distance_to_final);
+
+        trajectory_stop(); // Dừng PID
+        docking_start();   // Bật VL53L0X sensors
+        goal_reached_start_time = 0;
+        continue; // → Block (A) sẽ chạy docking_update() ở vòng sau
+      }
+      // Docking đã active hoặc complete → Block (A) xử lý
+      usleep(CONTROL_LOOP_DELAY_US);
+      continue;
+#else
+      // === ORIGINAL BEHAVIOR (no docking): Hold position then send arrived ===
       if (goal_reached_start_time == 0)
       {
         goal_reached_start_time = get_time_ms();
@@ -473,21 +554,18 @@ void *trajectory_thread_func(void *arg)
       long elapsed = get_time_ms() - goal_reached_start_time;
       if (elapsed >= ACCEPTANCE_HOLD_TIME_MS)
       {
-        // Goal reached AND held for standard time!
         trajectory_stop();
         printf("[TRAJ] Trajectory complete! Cur(%.2f, %.2f) Final(%.2f, %.2f) "
                "Dist:%.3f Radius:%.3f Held:%ldms\n",
                cur_x, cur_y, final_point.x, final_point.y, distance_to_final,
                acceptance_radius, elapsed);
 
-        // Notify laptop that robot has arrived
         const char *arrived_msg =
             "{\"type\": \"control\", \"status\": \"arrived\"}\n";
         send_to_laptop_clients(arrived_msg, strlen(arrived_msg));
         printf("[TRAJ] Sent arrival notification to laptop\n");
 
-        goal_reached_start_time =
-            0; // Reset for next time (though thread might sleep/exit)
+        goal_reached_start_time = 0;
         continue;
       }
 
@@ -496,7 +574,8 @@ void *trajectory_thread_func(void *arg)
       snprintf(hold_cmd, sizeof(hold_cmd), "dot_x:0.0000 dot_y:0.0000 dot_theta:0.0000\n");
       client_manager_broadcast_to_motor(hold_cmd, strlen(hold_cmd));
       usleep(CONTROL_LOOP_DELAY_US);
-      continue; // Skip PID control while holding
+      continue;
+#endif // ENABLE_DOCKING
     }
     else
     {

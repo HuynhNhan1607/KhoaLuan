@@ -12,13 +12,13 @@
 #include <stdbool.h>
 
 /* ===== Configuration Constants ===== */
-#define ARM_GRIPPER_OPEN 40.0   /* J5 angle for fully open */
-#define ARM_GRIPPER_CLOSED 90   /* J5 angle for fully closed */
+#define ARM_GRIPPER_OPEN 80     /* J5 angle for fully open */
+#define ARM_GRIPPER_CLOSED 145  /* J5 angle for fully closed */
 #define ARM_GRIPPER_WAIT_MS 500 /* ms to wait after closing gripper */
 
 // #define ARM_LIFT_HEIGHT 50.0      /* mm - lift height after picking */
-#define ARM_APPROACH_HEIGHT \
-  170                   /* mm - height to hover ABOVE object before descending */
+#define ARM_APPROACH_HEIGHT                                                    \
+  170 /* mm - height to hover ABOVE object before descending */
 #define ARM_PITCH -90.0 /* Gripper always points straight down */
 
 #define ARM_MOVE_DELAY_MS 300       /* Delay between major steps */
@@ -39,8 +39,7 @@
 #endif
 
 /* ===== Link Angles for Gravity Compensation ===== */
-typedef struct
-{
+typedef struct {
   double link0; /* J0 geometric angle (always 0) */
   double link1; /* J1 geometric angle from horizontal */
   double link2; /* J2 geometric angle from horizontal */
@@ -144,9 +143,9 @@ void arm_clear_stop(void);
 bool arm_is_stop_requested(void);
 
 /* ===== Gripper Offset Configuration ===== */
-#define GRIPPER_Y_OFFSET_MM \
+#define GRIPPER_Y_OFFSET_MM                                                    \
   70.0 /* mm - Gripper position offset from robot center along Y-axis */
-#define DEFAULT_GRIP_HEIGHT \
+#define DEFAULT_GRIP_HEIGHT                                                    \
   -180.0 /* mm - Default Z height for gripping objects */
 
 /**

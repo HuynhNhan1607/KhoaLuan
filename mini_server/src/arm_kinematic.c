@@ -28,7 +28,7 @@ static const ServoMapConfig servo_config[6] = {
     {90.0, 1},  /* j1: Shoulder - offset 90, dir 1 */
     {90.0, 1},  /* j2: Elbow - offset 90, dir 1 */
     {90.0, -1}, /* j3: Wrist Pitch - offset 90, dir -1 */
-    {0.0, 1},   /* j4: Wrist Roll - offset 0, dir 1 */
+    {90.0, -1}, /* j4: Wrist Roll - offset 0, dir 1 */
     {0.0, 1}    /* j5: Gripper - offset 0, dir 1 */
 };
 #elif ROBOT_ID == 2
@@ -44,8 +44,7 @@ static const ServoMapConfig servo_config[6] = {
 
 /* ===== Helper Functions ===== */
 
-static double clamp_d(double val, double min_val, double max_val)
-{
+static double clamp_d(double val, double min_val, double max_val) {
   if (val < min_val)
     return min_val;
   if (val > max_val)
@@ -55,10 +54,8 @@ static double clamp_d(double val, double min_val, double max_val)
 
 /* ===== Angle Mapping Functions ===== */
 
-double arm_map_angle(int joint_idx, double math_angle)
-{
-  if (joint_idx < 0 || joint_idx > 5)
-  {
+double arm_map_angle(int joint_idx, double math_angle) {
+  if (joint_idx < 0 || joint_idx > 5) {
     return 90.0; /* Default safe value */
   }
 
@@ -69,8 +66,7 @@ double arm_map_angle(int joint_idx, double math_angle)
   /* Safety Clamp */
   double max_angle = (joint_idx == 3) ? 360.0 : 180.0;
 
-  if (servo_angle < 0.0 || servo_angle > max_angle)
-  {
+  if (servo_angle < 0.0 || servo_angle > max_angle) {
     printf("[ARM-WARN] Clamping j%d: %.1f -> %.1f\n", joint_idx, servo_angle,
            clamp_d(servo_angle, 0.0, max_angle));
     servo_angle = clamp_d(servo_angle, 0.0, max_angle);
@@ -79,10 +75,8 @@ double arm_map_angle(int joint_idx, double math_angle)
   return servo_angle;
 }
 
-double arm_unmap_angle(int joint_idx, double servo_angle)
-{
-  if (joint_idx < 0 || joint_idx > 5)
-  {
+double arm_unmap_angle(int joint_idx, double servo_angle) {
+  if (joint_idx < 0 || joint_idx > 5) {
     return 0.0;
   }
 
@@ -94,8 +88,7 @@ double arm_unmap_angle(int joint_idx, double servo_angle)
 /* ===== Forward Kinematics ===== */
 
 bool arm_forward_kinematics(double j0_deg, double j1_servo, double j2_servo,
-                            double j3_servo, ArmPosition *pos)
-{
+                            double j3_servo, ArmPosition *pos) {
   if (!pos)
     return false;
 
@@ -141,8 +134,7 @@ bool arm_forward_kinematics(double j0_deg, double j1_servo, double j2_servo,
 /* ===== Inverse Kinematics (Exact) ===== */
 
 bool arm_ik_exact(double target_r, double target_z, double target_phi,
-                  double *j1, double *j2, double *j3)
-{
+                  double *j1, double *j2, double *j3) {
   if (!j1 || !j2 || !j3)
     return false;
 
@@ -168,13 +160,11 @@ bool arm_ik_exact(double target_r, double target_z, double target_phi,
       wrist_r, wrist_z, dist, min_reach, max_reach);
 
   /* Check reach constraints */
-  if (dist > max_reach)
-  {
+  if (dist > max_reach) {
     printf("[IK-FAIL] dist=%.1f > max_reach=%.1f\n", dist, max_reach);
     return false;
   }
-  if (dist < min_reach)
-  {
+  if (dist < min_reach) {
     printf("[IK-FAIL] dist=%.1f < min_reach=%.1f\n", dist, min_reach);
     return false;
   }
@@ -209,8 +199,7 @@ bool arm_ik_exact(double target_r, double target_z, double target_phi,
   /* Check Limits (Hardware 0-180) */
   /* Check Limits (Hardware 0-180 for most, 0-360 for J3) */
   if (sv1 < 0.0 || sv1 > 180.0 || sv2 < 0.0 || sv2 > 180.0 || sv3 < 0.0 ||
-      sv3 > 360.0)
-  {
+      sv3 > 360.0) {
     printf("[IK-FAIL] Servo out of range: sv1=%.1f, sv2=%.1f, sv3=%.1f\n", sv1,
            sv2, sv3);
     return false;
@@ -227,8 +216,7 @@ bool arm_ik_exact(double target_r, double target_z, double target_phi,
 
 bool arm_ik_fuzzy(double target_r, double target_z, double target_phi,
                   double tol_pos, double tol_phi, double *j1, double *j2,
-                  double *j3, FuzzyIKInfo *info)
-{
+                  double *j3, FuzzyIKInfo *info) {
   if (!j1 || !j2 || !j3)
     return false;
 
@@ -243,20 +231,16 @@ bool arm_ik_fuzzy(double target_r, double target_z, double target_phi,
   /* Angle search grid (3 degree steps) */
   double phi_step = 3.0;
 
-  for (double d_phi = -tol_phi; d_phi <= tol_phi; d_phi += phi_step)
-  {
+  for (double d_phi = -tol_phi; d_phi <= tol_phi; d_phi += phi_step) {
     double curr_phi = target_phi + d_phi;
 
-    for (double dr = -tol_pos; dr <= tol_pos; dr += pos_step)
-    {
-      for (double dz = -tol_pos; dz <= tol_pos; dz += pos_step)
-      {
+    for (double dr = -tol_pos; dr <= tol_pos; dr += pos_step) {
+      for (double dz = -tol_pos; dz <= tol_pos; dz += pos_step) {
         double curr_r = target_r + dr;
         double curr_z = target_z + dz;
 
         double s1, s2, s3;
-        if (arm_ik_exact(curr_r, curr_z, curr_phi, &s1, &s2, &s3))
-        {
+        if (arm_ik_exact(curr_r, curr_z, curr_phi, &s1, &s2, &s3)) {
           /* Cost Function */
           double dist_error = sqrt(dr * dr + dz * dz);
           double phi_error = fabs(d_phi);
@@ -269,8 +253,7 @@ bool arm_ik_fuzzy(double target_r, double target_z, double target_phi,
           double total_score =
               (dist_error * 1.0) + (phi_error * 0.5) + (servo_cost * 1.0);
 
-          if (total_score < min_score)
-          {
+          if (total_score < min_score) {
             min_score = total_score;
             best_j1 = s1;
             best_j2 = s2;
@@ -286,13 +269,11 @@ bool arm_ik_fuzzy(double target_r, double target_z, double target_phi,
     }
   }
 
-  if (found)
-  {
+  if (found) {
     *j1 = best_j1;
     *j2 = best_j2;
     *j3 = best_j3;
-    if (info)
-    {
+    if (info) {
       *info = best_info;
     }
   }
@@ -303,8 +284,7 @@ bool arm_ik_fuzzy(double target_r, double target_z, double target_phi,
 /* ===== Main IK Entry Point ===== */
 
 bool arm_ik_solve(double x, double y, double z, double phi_deg, double tol_pos,
-                  double tol_phi, ArmAngles *angles)
-{
+                  double tol_phi, ArmAngles *angles) {
   if (!angles)
     return false;
 
@@ -313,8 +293,7 @@ bool arm_ik_solve(double x, double y, double z, double phi_deg, double tol_pos,
   double theta0_deg = RAD_TO_DEG(theta0_rad);
 
   /* Check if angle is within physical servo range [0°, 180°] */
-  if (theta0_deg < 0.0 || theta0_deg > 180.0)
-  {
+  if (theta0_deg < 0.0 || theta0_deg > 180.0) {
     printf("[IK-FAIL] Target (x=%.1f, y=%.1f) requires J0=%.1f deg "
            "(out of range [0, 180])\n",
            x, y, theta0_deg);
@@ -325,8 +304,7 @@ bool arm_ik_solve(double x, double y, double z, double phi_deg, double tol_pos,
   /* Map to Servo J0 */
   double sv0 = arm_map_angle(0, theta0_deg);
 
-  if (sv0 < 0.0 || sv0 > 180.0)
-  {
+  if (sv0 < 0.0 || sv0 > 180.0) {
     printf("[IK-FAIL] Base J0 servo out of bounds: %.1f deg\n", sv0);
     return false;
   }
@@ -336,8 +314,7 @@ bool arm_ik_solve(double x, double y, double z, double phi_deg, double tol_pos,
 
   /* 3. Try Exact IK only (no fuzzy fallback) */
   double j1, j2, j3;
-  if (arm_ik_exact(r, z, phi_deg, &j1, &j2, &j3))
-  {
+  if (arm_ik_exact(r, z, phi_deg, &j1, &j2, &j3)) {
     angles->j0 = sv0;
     angles->j1 = j1;
     angles->j2 = j2;
@@ -355,18 +332,17 @@ bool arm_ik_solve(double x, double y, double z, double phi_deg, double tol_pos,
 }
 
 bool arm_ik_solve_simple(double x, double y, double z, double phi_deg,
-                         ArmAngles *angles)
-{
+                         ArmAngles *angles) {
   /* Default tolerances: 10mm position, 90deg angle */
   return arm_ik_solve(x, y, z, phi_deg, 10.0, 90.0, angles);
 }
 
 /* ===== J4 Orientation Control ===== */
 
-double arm_calculate_j4_perpendicular_to_x(double j0_deg)
-{
+double arm_calculate_j4_perpendicular_to_x(double j0_deg) {
   /**
-   * Purpose: Calculate J4 (wrist roll) to keep end-effector perpendicular to X-axis
+   * Purpose: Calculate J4 (wrist roll) to keep end-effector perpendicular to
+   * X-axis
    *
    * Logic: As base J0 rotates, J4 must compensate to maintain perpendicularity
    * - When J0=0°:   arm points along +X, J4=90° for perpendicular
@@ -381,24 +357,23 @@ double arm_calculate_j4_perpendicular_to_x(double j0_deg)
    * When J0 increases, J4 should decrease to maintain perpendicularity
    * Formula: J4 = 180° - J0 */
   j4_math = 180.0 - j0_deg;
-  printf("[ARM-DEBUG] Robot 1: J0=%.1f° -> J4_math=%.1f° (180-J0)\n", j0_deg, j4_math);
+  printf("[ARM-DEBUG] Robot 1: J0=%.1f° -> J4_math=%.1f° (180-J0)\n", j0_deg,
+         j4_math);
 #else
   /* Robot 2: Standard compensation */
   j4_math = 180.0 - j0_deg;
-  printf("[ARM-DEBUG] Robot 2: J0=%.1f° -> J4_math=%.1f° (90-J0)\n", j0_deg, j4_math);
+  printf("[ARM-DEBUG] Robot 2: J0=%.1f° -> J4_math=%.1f° (90-J0)\n", j0_deg,
+         j4_math);
 #endif
 
   /* Map to servo angle */
   double j4_servo = arm_map_angle(4, j4_math);
 
   /* Safety clamp to servo range [0, 180] */
-  if (j4_servo < 0.0)
-  {
+  if (j4_servo < 0.0) {
     printf("[ARM-WARN] J4 clamped: %.1f -> 0.0\n", j4_servo);
     j4_servo = 0.0;
-  }
-  else if (j4_servo > 180.0)
-  {
+  } else if (j4_servo > 180.0) {
     printf("[ARM-WARN] J4 clamped: %.1f -> 180.0\n", j4_servo);
     j4_servo = 180.0;
   }

@@ -16,6 +16,7 @@ extern pthread_mutex_t g_optical_mutex;
 extern ekf_t g_ekf;
 extern pthread_mutex_t g_ekf_mutex;
 #include "trajectory_executor.h"
+#include "docking.h"
 
 static struct gpiod_chip *chip = NULL;
 struct gpiod_line *line = NULL;
@@ -69,6 +70,7 @@ int main(void)
 
   gpio_init();
   trajectory_init();
+  docking_init();
 
   pthread_t th_server, th_laptop_server, th_localize, th_optical_flow;
 

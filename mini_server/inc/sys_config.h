@@ -15,7 +15,7 @@
 // Test mode khi nhấc bánh xe lên:
 // 0 = chế độ bình thường (có UWB + optical flow)
 // 1 = chế độ test (chỉ odometry + IMU, tắt UWB + optical flow)
-#define TEST_MODE_WHEEL_UP 0
+#define TEST_MODE_WHEEL_UP 1
 
 // Optical Flow Enable/Disable:
 // 0 = tắt hoàn toàn optical flow (khi cảm biến hư)
@@ -55,9 +55,11 @@
 // Uses continuous function: speed_scale = 1 - (error/max_error)^2
 // This creates smooth deceleration from 0cm to max_error
 // TRANSPORT MODE: Allow reasonable tolerance for sync errors
-#define FOLLOWER_ERROR_MAX 0.09f      // 15cm - leader stops completely (relaxed for sync delay)
-#define FOLLOWER_ERROR_DEADBAND 0.02f // 5cm - ignore small errors (noise + EKF uncertainty)
-#define FOLLOWER_DATA_TIMEOUT 0.5     // 500ms - timeout for follower data
+#define FOLLOWER_ERROR_MAX \
+  0.09f // 15cm - leader stops completely (relaxed for sync delay)
+#define FOLLOWER_ERROR_DEADBAND \
+  0.02f                           // 5cm - ignore small errors (noise + EKF uncertainty)
+#define FOLLOWER_DATA_TIMEOUT 0.5 // 500ms - timeout for follower data
 
 // Velocity smoothing (low-pass filter) to prevent jerky motion
 // smooth_vel = alpha * new_vel + (1-alpha) * old_vel
@@ -68,9 +70,24 @@
 // ============ SINGLE ROBOT MODE ============
 // Set to 1 when only Robot1 is operating (Robot2 is unavailable/broken)
 // Effects:
-//   - formation_lock_transport_offset: không cần neighbor data, lock ngay lập tức
+//   - formation_lock_transport_offset: không cần neighbor data, lock ngay lập
+//   tức
 //   - Transport phase: bỏ qua follower error check, chạy full speed
 //   - sync_position thread: tắt hoàn toàn (không có peer để broadcast)
 #define SINGLE_ROBOT_MODE 1
+
+// ============ DOCKING (VL53L0X) CONFIG ============
+// Bật/tắt docking bằng cảm biến khoảng cách VL53L0X
+// 0 = tắt, dùng acceptance zone cũ (EKF position)
+// 1 = bật, sau khi vào acceptance zone sẽ dùng VL53L0X docking
+#define ENABLE_DOCKING 1
+
+// VL53L0X I2C & GPIO config
+#define DOCK_I2C_BUS 1            // I2C bus number
+#define DOCK_GPIO_XSHUT_LEFT 108  // GPIO line offset cho XSHUT trái
+#define DOCK_GPIO_XSHUT_RIGHT 118 // GPIO line offset cho XSHUT phải
+
+// Khoảng cách mục tiêu khi docking (mm) — cũng là khoảng cách gắp cố định
+#define DOCK_FIXED_GRIP_DISTANCE_MM 150 // 150mm = 15cm
 
 #endif

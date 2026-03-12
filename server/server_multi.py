@@ -667,6 +667,22 @@ class Server:
                                             self.handle_transport_completion(robot_id)
                                         else:
                                             self.handle_arrival_notification(robot_id)
+                                    elif status == 'docking_complete':
+                                        self.gui.update_monitor(
+                                            f"Robot {robot_id}: DOCKING COMPLETE — VL53L0X aligned!"
+                                        )
+                                        self.gui.update_docking_status(robot_id, 'complete')
+                                    elif status == 'docking_started':
+                                        self.gui.update_monitor(
+                                            f"Robot {robot_id}: Docking started"
+                                        )
+                                        self.gui.update_docking_status(robot_id, 'active')
+                                    elif status == 'docking_not_found':
+                                        self.gui.update_monitor(
+                                            f"Robot {robot_id}: DOCKING FAILED — object not found!"
+                                        )
+                                        self.gui.update_docking_status(robot_id, 'error')
+                                        self.gui.update_arrival_status(robot_id, 'not_found')
                                     else:
                                         self.gui.update_monitor(
                                             f"Robot {robot_id}: Control status: {status}"
@@ -1059,6 +1075,41 @@ class Server:
             # Stop all robots
             for rid in self.robot_connections.keys():
                 self.emergency_stop(rid)
+
+    def send_docking_test(self, robot_id):
+        """Send start_docking command to test VL53L0X docking independently"""
+        if robot_id not in self.robot_connections:
+            self.gui.update_monitor(f"Robot {robot_id}: Not connected")
+            return
+        
+        payload = {
+            "type": "control",
+            "cmd": "start_docking"
+        }
+        try:
+            sock = self.robot_connections[robot_id]
+            json_str = json.dumps(payload)
+            sock.sendall((json_str + "\n").encode())
+            self.gui.update_monitor(f"🔍 Robot {robot_id}: Sent start_docking command")
+        except Exception as e:
+            self.gui.update_monitor(f"Robot {robot_id}: Error sending docking command: {e}")
+
+    def send_stop_docking(self, robot_id):
+        """Send stop_docking command"""
+        if robot_id not in self.robot_connections:
+            return
+        
+        payload = {
+            "type": "control",
+            "cmd": "stop_docking"
+        }
+        try:
+            sock = self.robot_connections[robot_id]
+            json_str = json.dumps(payload)
+            sock.sendall((json_str + "\n").encode())
+            self.gui.update_monitor(f"Robot {robot_id}: Sent stop_docking command")
+        except Exception as e:
+            self.gui.update_monitor(f"Robot {robot_id}: Error: {e}")
 
     def send_set_pid(self, robot_id):
         """Send PID values to a specific robot"""
