@@ -159,15 +159,16 @@ static void docking_reset(bool stop_motion)
 
 static void docking_set_state(DockState new_state)
 {
-  if (g_dock.state != new_state)
+  if (g_dock.state == new_state)
   {
-    long now = get_time_ms();
-    printf("[DOCK] STATE %s -> %s (state_elapsed=%ldms total_elapsed=%ldms)\n",
-           dock_state_name(g_dock.state), dock_state_name(new_state),
-           now - g_dock.state_start_ms, now - g_dock.docking_start_ms);
+    return;
   }
+  long now = get_time_ms();
+  printf("[DOCK] STATE %s -> %s (state_elapsed=%ldms total_elapsed=%ldms)\n",
+         dock_state_name(g_dock.state), dock_state_name(new_state),
+         now - g_dock.state_start_ms, now - g_dock.docking_start_ms);
   g_dock.state = new_state;
-  g_dock.state_start_ms = get_time_ms();
+  g_dock.state_start_ms = now;
 }
 
 static bool docking_connect_vision_if_needed(void)

@@ -107,28 +107,35 @@ int try_accept_client(int server_fd, int current_client_fd)
 
 bool load_calibration(cv::Mat &camera_matrix, cv::Mat &dist_coeffs)
 {
+  // NOTE:
+  // OpenCV FileStorage does not reliably parse NumPy .npz in all environments.
+  // We try loading first; if failed, fallback to approximate intrinsics so
+  // docking can still run (rough z estimation).
   cv::FileStorage fs("camera/calib_data.npz", cv::FileStorage::READ);
   if (!fs.isOpened())
   {
     fs.release();
     fs.open("calib_data.npz", cv::FileStorage::READ);
   }
-  if (!fs.isOpened())
+  if (fs.isOpened())
   {
-    std::fprintf(stderr,
-                 "[VISION] Cannot open calib_data.npz. Expected in camera/ or cwd.\n");
-    return false;
+    fs["mtx"] >> camera_matrix;
+    fs["dist"] >> dist_coeffs;
+    fs.release();
   }
 
-  fs["mtx"] >> camera_matrix;
-  fs["dist"] >> dist_coeffs;
-  fs.release();
-
-  if (camera_matrix.empty() || dist_coeffs.empty())
+  if (!camera_matrix.empty() && !dist_coeffs.empty())
   {
-    std::fprintf(stderr, "[VISION] Invalid calibration content in npz file.\n");
-    return false;
+    std::printf("[VISION] Loaded calibration from calib_data.npz\n");
+    return true;
   }
+
+  std::fprintf(stderr,
+               "[VISION] Calibration load failed. Using fallback intrinsics.\n");
+  // Fallback camera intrinsics (rough default for 640x480 stream)
+  camera_matrix = (cv::Mat_<double>(3, 3) << 600.0, 0.0, 320.0, 0.0, 600.0,
+                   240.0, 0.0, 0.0, 1.0);
+  dist_coeffs = cv::Mat::zeros(1, 5, CV_64F);
   return true;
 }
 

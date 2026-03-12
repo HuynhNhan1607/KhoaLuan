@@ -725,7 +725,6 @@ void *laptop_server_thread(void *arg)
                   strstr(buffer, "arm_gripper") || strstr(buffer, "arm_rest") ||
                   strstr(buffer, "execute_grip") ||
                   strstr(buffer, "execute_place") ||
-                  strstr(buffer, "execute_docking_test") ||
                   strstr(buffer, "sync_position"))
               {
 
