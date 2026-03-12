@@ -74,6 +74,51 @@ void trajectory_init(void)
   }
 }
 
+void trajectory_correct_heading(float target_theta)
+{
+  printf("[TRAJ] Correcting heading to %.2f rad (%.1f deg)...\n",
+         target_theta, target_theta * 180.0f / (float)M_PI);
+
+  const float KP = 1.0f;
+  const float MAX_W = 0.5f;
+  const float TOLERANCE = 0.05f; /* ~3 degrees */
+  const int MAX_ITERS = 200;     /* ~10 s at 20 Hz */
+
+  for (int i = 0; i < MAX_ITERS; i++)
+  {
+    pthread_mutex_lock(&g_ekf_mutex);
+    float cur_theta = (float)g_ekf.x[4];
+    pthread_mutex_unlock(&g_ekf_mutex);
+
+    float err = target_theta - cur_theta;
+    while (err > (float)M_PI)
+      err -= 2.0f * (float)M_PI;
+    while (err < -(float)M_PI)
+      err += 2.0f * (float)M_PI;
+
+    if (fabsf(err) < TOLERANCE)
+      break;
+
+    float cmd_w = KP * err;
+    if (cmd_w > MAX_W)
+      cmd_w = MAX_W;
+    if (cmd_w < -MAX_W)
+      cmd_w = -MAX_W;
+
+    char rot_cmd[64];
+    snprintf(rot_cmd, sizeof(rot_cmd),
+             "dot_x:0.0000 dot_y:0.0000 dot_theta:%.4f\n", cmd_w);
+    client_manager_broadcast_to_motor(rot_cmd, strlen(rot_cmd));
+
+    usleep(CONTROL_LOOP_DELAY_US);
+  }
+
+  /* Stop rotation */
+  const char *stop = "dot_x:0.0000 dot_y:0.0000 dot_theta:0.0000\n";
+  client_manager_broadcast_to_motor(stop, strlen(stop));
+  printf("[TRAJ] Heading correction complete\n");
+}
+
 void trajectory_set_current_pose(float x, float y, float theta)
 {
   (void)x;
@@ -172,6 +217,13 @@ void trajectory_start_at(double start_time)
     printf("[TRAJ] ERROR: Invalid start_time (%.3f). Must be > 0!\n",
            start_time);
     return;
+  }
+
+  // Nếu đang ở transport phase, chỉnh heading về 0 trước khi chạy trajectory
+  if (formation_is_transport_active())
+  {
+    printf("[TRAJ] Transport trajectory: correcting heading to 0 before start\n");
+    trajectory_correct_heading(0.0f);
   }
 
   pthread_mutex_lock(&g_traj_mutex);
@@ -501,7 +553,8 @@ void *trajectory_thread_func(void *arg)
     if (distance_to_final < acceptance_radius)
     {
 #if ENABLE_THETA_TRACKING
-      if (final_point.has_theta)
+      // In transport mode skip theta check — position-only acceptance
+      if (!is_transport && final_point.has_theta)
       {
         float theta_err = cur_theta - final_point.theta;
         if (fabs(theta_err) < ACCEPTANCE_ANGLE)
@@ -522,13 +575,10 @@ void *trajectory_thread_func(void *arg)
     {
       // ╔══════════════════════════════════════════════════════════════════╗
       // ║  DOCKING BLOCK (B): Start docking when entering acceptance zone║
-      // ║                                                                ║
-      // ║  Robot đã chạy trajectory PID tới gần vật (acceptance zone).   ║
-      // ║  Bây giờ dừng PID, bật VL53L0X sensor docking.                ║
-      // ║  Vòng lặp tiếp theo sẽ vào Block (A) ở trên để chạy docking. ║
+      // ║  Only for phase 1 (not transport mode — docking already done)  ║
       // ╚══════════════════════════════════════════════════════════════════╝
 #if ENABLE_DOCKING == 1
-      if (!docking_is_active() && !docking_is_complete())
+      if (!is_transport && !docking_is_active() && !docking_is_complete())
       {
         printf("[TRAJ] Entered acceptance zone — starting VL53L0X docking\n");
         printf("[TRAJ] Cur(%.2f, %.2f) Final(%.2f, %.2f) Dist:%.3f\n",
@@ -539,11 +589,16 @@ void *trajectory_thread_func(void *arg)
         goal_reached_start_time = 0;
         continue; // → Block (A) sẽ chạy docking_update() ở vòng sau
       }
-      // Docking đã active hoặc complete → Block (A) xử lý
-      usleep(CONTROL_LOOP_DELAY_US);
-      continue;
-#else
-      // === ORIGINAL BEHAVIOR (no docking): Hold position then send arrived ===
+      if (!is_transport && (docking_is_active() || docking_is_complete()))
+      {
+        // Docking đã active hoặc complete → Block (A) xử lý
+        usleep(CONTROL_LOOP_DELAY_US);
+        continue;
+      }
+      // is_transport == true: fall through to hold-then-arrived logic below
+#endif // ENABLE_DOCKING
+
+      // === HOLD THEN ARRIVED (transport phase 2, or no-docking build) ===
       if (goal_reached_start_time == 0)
       {
         goal_reached_start_time = get_time_ms();
@@ -575,7 +630,6 @@ void *trajectory_thread_func(void *arg)
       client_manager_broadcast_to_motor(hold_cmd, strlen(hold_cmd));
       usleep(CONTROL_LOOP_DELAY_US);
       continue;
-#endif // ENABLE_DOCKING
     }
     else
     {
@@ -774,25 +828,20 @@ void *trajectory_thread_func(void *arg)
 #if ROBOT_ID == 1
     if (is_transport)
     {
-      double locked_theta = 0.0;
-      if (formation_get_locked_theta(&locked_theta))
-      {
-        // P-controller to hold locked theta
-        float theta_err = cur_theta - (float)locked_theta;
-        // Normalize to [-PI, PI]
-        while (theta_err > M_PI)
-          theta_err -= 2.0f * M_PI;
-        while (theta_err < -M_PI)
-          theta_err += 2.0f * M_PI;
+      // Always hold heading at 0 during transport
+      float theta_err = cur_theta - 0.0f;
+      while (theta_err > (float)M_PI)
+        theta_err -= 2.0f * (float)M_PI;
+      while (theta_err < -(float)M_PI)
+        theta_err += 2.0f * (float)M_PI;
 
-        const float KP_THETA_HOLD = 1.0f;
-        const float MAX_ANGULAR_VEL_HOLD = 0.5f;
-        cmd_dot_theta = -KP_THETA_HOLD * theta_err;
-        if (cmd_dot_theta > MAX_ANGULAR_VEL_HOLD)
-          cmd_dot_theta = MAX_ANGULAR_VEL_HOLD;
-        if (cmd_dot_theta < -MAX_ANGULAR_VEL_HOLD)
-          cmd_dot_theta = -MAX_ANGULAR_VEL_HOLD;
-      }
+      const float KP_THETA_HOLD = 1.0f;
+      const float MAX_ANGULAR_VEL_HOLD = 0.5f;
+      cmd_dot_theta = -KP_THETA_HOLD * theta_err;
+      if (cmd_dot_theta > MAX_ANGULAR_VEL_HOLD)
+        cmd_dot_theta = MAX_ANGULAR_VEL_HOLD;
+      if (cmd_dot_theta < -MAX_ANGULAR_VEL_HOLD)
+        cmd_dot_theta = -MAX_ANGULAR_VEL_HOLD;
     }
     else
 #endif

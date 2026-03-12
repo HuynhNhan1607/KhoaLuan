@@ -36,7 +36,9 @@ extern "C"
         DOCK_STATE_CENTERING_X,   /**< Case 2: 1 thấy, 1 không → trượt ngang về phía trống */
         DOCK_STATE_ALIGNING_YAW,  /**< Case 3: Cả 2 thấy nhưng lệch → xoay tại chỗ        */
         DOCK_STATE_APPROACHING_Y, /**< Case 4: Đã thẳng hàng → tiến tới mục tiêu           */
+        DOCK_STATE_BACKING_Y,     /**< Case 4b: Quá sát → lùi ra cho đến khi đủ khoảng cách */
         DOCK_STATE_DOCKED,        /**< Case 5: Đúng vị trí → dừng, kích hoạt gắp            */
+        DOCK_STATE_NOT_FOUND,     /**< Tìm kiếm hết phạm vi mà không thấy vật              */
         DOCK_STATE_ERROR          /**< Lỗi khởi tạo hoặc phần cứng                         */
     } DockState;
 
@@ -124,6 +126,13 @@ extern "C"
 
         /* ── Sensor I/O timeout (ms) ─────────────────────────────────────── */
         uint16_t sensor_timeout_ms; /**< Timeout for each sensor read     */
+
+        /* ── Calibration offsets (mm, signed) ───────────────────────────── */
+        /* Corrects systematic bias between the two sensors.                  */
+        /* raw_reading + offset = calibrated_reading                          */
+        /* Example: right reads +20 mm too high → calib_offset_right_mm = -20 */
+        int16_t calib_offset_left_mm;  /**< Additive offset for LEFT sensor  */
+        int16_t calib_offset_right_mm; /**< Additive offset for RIGHT sensor */
     } DockConfig;
 
     /**

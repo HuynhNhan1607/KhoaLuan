@@ -1171,52 +1171,16 @@ void parse_json_message(const char *json_str, int length)
           printf("[GRIP] Scheduled time: %.3f\n", scheduled_time);
         }
 
-        // Get current robot position from EKF
-        extern ekf_t g_ekf;
-        extern pthread_mutex_t g_ekf_mutex;
+        // === HARDCODED GRIP: object is directly ahead at fixed distance ===
+        // No position/EKF calculation needed - just use default arm coordinates
+        double arm_x = 0.0;
+        double arm_y = (double)DOCK_FIXED_GRIP_DISTANCE_MM;
+        double arm_z = DEFAULT_GRIP_HEIGHT;
 
-        pthread_mutex_lock(&g_ekf_mutex);
-        double robot_x = g_ekf.x[0];
-        double robot_y = g_ekf.x[1];
-        double robot_theta = g_ekf.x[4]; // theta in radians
-        pthread_mutex_unlock(&g_ekf_mutex);
+        printf("[GRIP] Hardcoded arm pick: X=%.1f Y=%.1f Z=%.1f mm\n",
+               arm_x, arm_y, arm_z);
 
-        printf("[GRIP] Robot EKF: pos(%.3f, %.3f) theta=%.2f rad\n", robot_x,
-               robot_y, robot_theta);
-
-        bool success = false;
-
-#if ENABLE_DOCKING
-        if (docking_is_complete())
-        {
-          // === DOCKING MODE: Grip at fixed distance ===
-          // VL53L0X đã docking chính xác, dùng khoảng cách cố định
-          // Body frame: X=0 (ngay tâm), Y=dock_distance (trước mặt)
-          double grip_dist_m = (double)DOCK_FIXED_GRIP_DISTANCE_MM / 1000.0;
-
-          // Convert body offset to global position:
-          // obj_global = robot_pos + R(theta) * [grip_dist; 0]
-          // (robot nhìn thẳng về vật, offset theo trục X body = hướng trước)
-          double dock_obj_x = robot_x + cos(robot_theta) * grip_dist_m;
-          double dock_obj_y = robot_y + sin(robot_theta) * grip_dist_m;
-
-          printf("[GRIP] DOCKING MODE: Fixed grip at distance %d mm\n",
-                 DOCK_FIXED_GRIP_DISTANCE_MM);
-          printf("[GRIP] Fixed obj pos: (%.3f, %.3f) [body offset: X=%.3f, Y=0]\n",
-                 dock_obj_x, dock_obj_y, grip_dist_m);
-
-          success = arm_execute_grip(robot_x, robot_y, robot_theta,
-                                    dock_obj_x, dock_obj_y,
-                                    obj_length, obj_width, side);
-        }
-        else
-#endif // ENABLE_DOCKING
-        {
-          // === ORIGINAL MODE: Grip using server object_pos ===
-          printf("[GRIP] NORMAL MODE: Grip using server position\n");
-          success = arm_execute_grip(robot_x, robot_y, robot_theta, obj_x,
-                                    obj_y, obj_length, obj_width, side);
-        }
+        bool success = arm_pick(arm_x, arm_y, arm_z);
 
         // Lock transport offset for Virtual Structure mode (Phase 2)
         // centroid = object center position
@@ -1274,22 +1238,15 @@ void parse_json_message(const char *json_str, int length)
         printf("[PLACE] Object: pos(%.3f, %.3f) size(%.2f x %.2f) side=%s\n",
                obj_x, obj_y, obj_length, obj_width, side);
 
-        // Get current robot position from EKF
-        extern ekf_t g_ekf;
-        extern pthread_mutex_t g_ekf_mutex;
+        // === HARDCODED PLACE: object is directly ahead at fixed distance ===
+        double arm_x = 0.0;
+        double arm_y = (double)DOCK_FIXED_GRIP_DISTANCE_MM;
+        double arm_z = DEFAULT_GRIP_HEIGHT;
 
-        pthread_mutex_lock(&g_ekf_mutex);
-        double robot_x = g_ekf.x[0];
-        double robot_y = g_ekf.x[1];
-        double robot_theta = g_ekf.x[4]; // theta in radians
-        pthread_mutex_unlock(&g_ekf_mutex);
+        printf("[PLACE] Hardcoded arm place: X=%.1f Y=%.1f Z=%.1f mm\n",
+               arm_x, arm_y, arm_z);
 
-        printf("[PLACE] Robot EKF: pos(%.3f, %.3f) theta=%.2f rad\n", robot_x,
-               robot_y, robot_theta);
-
-        // Execute place
-        bool success = arm_execute_place(robot_x, robot_y, robot_theta, obj_x,
-                                         obj_y, obj_length, obj_width, side);
+        bool success = arm_place(arm_x, arm_y, arm_z);
 
         // End transport mode after placing
         if (success)
