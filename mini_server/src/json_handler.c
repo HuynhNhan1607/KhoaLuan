@@ -12,6 +12,7 @@
 #include "optical_flow.h"
 #include "socket.h"
 #include "sys_config.h"
+#include "trajectory_executor.h"
 #include <errno.h>
 #include <pthread.h>
 #include <sqlite3.h>
@@ -1130,6 +1131,22 @@ void parse_json_message(const char *json_str, int length)
 
       cJSON_Delete(json);
       return; // Exit early, don't process execute_grip below
+    }
+
+    // Docking test command: chạy độc lập nhưng dùng cùng state machine
+    if (cmd_json && cJSON_IsString(cmd_json) &&
+        strcmp(cmd_json->valuestring, "execute_docking_test") == 0)
+    {
+      printf("[DOCK_TEST] Received execute_docking_test command\n");
+      bool ok = trajectory_start_docking_test();
+      const char *resp = ok
+                             ? "{\"type\":\"control\",\"status\":\"docking_test_started\",\"cmd\":\"execute_docking_test_result\"}\n"
+                             : "{\"type\":\"control\",\"status\":\"docking_busy\",\"cmd\":\"execute_docking_test_result\"}\n";
+      send_to_upstream_server(resp, strlen(resp));
+      printf("[DOCK_TEST] Response: %s", ok ? "docking_test_started\n"
+                                           : "docking_busy\n");
+      cJSON_Delete(json);
+      return;
     }
 
     // Check for execute_grip command

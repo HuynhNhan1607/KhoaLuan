@@ -23,3 +23,13 @@ gcc -Wall -Wextra -std=c11 \
     -lsqlite3 -lpthread -lm -lgpiod
 
 echo "Build done for $ROBOT_ID! Run with ./single_mini-server"
+
+echo "Building camera docking service (optional)..."
+if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists opencv4; then
+    g++ -Wall -Wextra -std=c++17 \
+        -o ../camera/pose_estimate_service ../camera/pose_estimate.cpp \
+        $(pkg-config --cflags --libs opencv4)
+    echo "Camera service build done: ./camera/pose_estimate_service"
+else
+    echo "Skip camera service build: opencv4 pkg-config not found"
+fi

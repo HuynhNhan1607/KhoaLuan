@@ -652,6 +652,12 @@ void *laptop_server_thread(void *arg)
                 // Forward to json_handler for processing
                 parse_json_message(buffer, valread);
               }
+              else if (strstr(buffer, "\"cmd\":\"execute_docking_test\"") ||
+                       strstr(buffer, "\"cmd\": \"execute_docking_test\""))
+              {
+                printf("[SOCKET] Received execute_docking_test command\n");
+                parse_json_message(buffer, valread);
+              }
               else
               {
                 // Other control commands - broadcast to ESP32
@@ -719,6 +725,7 @@ void *laptop_server_thread(void *arg)
                   strstr(buffer, "arm_gripper") || strstr(buffer, "arm_rest") ||
                   strstr(buffer, "execute_grip") ||
                   strstr(buffer, "execute_place") ||
+                  strstr(buffer, "execute_docking_test") ||
                   strstr(buffer, "sync_position"))
               {
 

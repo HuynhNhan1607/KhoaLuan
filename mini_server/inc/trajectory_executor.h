@@ -33,6 +33,16 @@
 #define KP_THETA 0.5f        // P-correction gain (feedforward is main controller)
 #define MAX_ANGULAR_VEL 0.5f // Maximum angular velocity in rad/s
 
+// Docking parameters (global frame commands)
+#define DOCK_SCAN_VX 0.05f
+#define DOCK_ALIGN_VX 0.05f
+#define DOCK_APPROACH_VY 0.05f
+#define DOCK_X_TOL 0.01f
+#define DOCK_TARGET_Z 0.16f
+#define DOCK_Y_TOL 0.01f
+#define DOCK_SCAN_TIMEOUT_MS 2500
+#define DOCK_TOTAL_TIMEOUT_MS 12000
+
 typedef struct
 {
   float x;
@@ -76,5 +86,8 @@ bool trajectory_is_running(void);
 // Helper to set current robot position for the controller
 // This should be called by the localization thread or main loop updates
 void trajectory_set_current_pose(float x, float y, float theta);
+
+// Start docking test mode (no trajectory required)
+bool trajectory_start_docking_test(void);
 
 #endif // TRAJECTORY_EXECUTOR_H

@@ -6,11 +6,16 @@
 #include "localize.h"          // For current pose if needed directly, though we might inject it
 #include "socket.h"            // For send_to_laptop_clients
 #include "sys_config.h"        // For ENABLE_THETA_TRACKING
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <math.h>
+#include <netinet/in.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
 
@@ -39,6 +44,410 @@ static double g_pid_log_start_time = 0.0;
 #define PID_LOG_FILE "./tools/pid_log.csv"
 #endif
 
+static long get_time_ms(void);
+
+typedef enum
+{
+  DOCK_STATE_IDLE = 0,
+  DOCK_STATE_SEARCH_RIGHT,
+  DOCK_STATE_SEARCH_LEFT,
+  DOCK_STATE_ALIGN_X,
+  DOCK_STATE_APPROACH_Y
+} DockState;
+
+typedef struct
+{
+  bool active;
+  bool test_mode;
+  DockState state;
+  long docking_start_ms;
+  long state_start_ms;
+  long last_vision_ms;
+  bool vision_found;
+  float vision_x;
+  float vision_z;
+  int vision_sock;
+  char vision_buf[1024];
+  int vision_buf_len;
+  long last_status_log_ms;
+  long last_connect_try_ms;
+} DockingCtx;
+
+static DockingCtx g_dock = {
+    .active = false,
+    .test_mode = false,
+    .state = DOCK_STATE_IDLE,
+    .docking_start_ms = 0,
+    .state_start_ms = 0,
+    .last_vision_ms = 0,
+    .vision_found = false,
+    .vision_x = 0.0f,
+    .vision_z = 0.0f,
+    .vision_sock = -1,
+    .vision_buf_len = 0,
+    .last_status_log_ms = 0,
+    .last_connect_try_ms = 0};
+static pthread_mutex_t g_dock_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static const char *dock_state_name(DockState s)
+{
+  switch (s)
+  {
+  case DOCK_STATE_IDLE:
+    return "IDLE";
+  case DOCK_STATE_SEARCH_RIGHT:
+    return "SEARCH_RIGHT";
+  case DOCK_STATE_SEARCH_LEFT:
+    return "SEARCH_LEFT";
+  case DOCK_STATE_ALIGN_X:
+    return "ALIGN_X";
+  case DOCK_STATE_APPROACH_Y:
+    return "APPROACH_Y";
+  default:
+    return "UNKNOWN";
+  }
+}
+
+static int set_nonblock_fd(int fd)
+{
+  int flags = fcntl(fd, F_GETFL, 0);
+  if (flags < 0)
+    return -1;
+  return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+static void send_motor_velocity(float vx, float vy, float vtheta)
+{
+  char cmd[128];
+  snprintf(cmd, sizeof(cmd), "dot_x:%.4f dot_y:%.4f dot_theta:%.4f\n", vx, vy,
+           vtheta);
+  client_manager_broadcast_to_motor(cmd, strlen(cmd));
+  g_last_cmd_vx = vx;
+  g_last_cmd_vy = vy;
+}
+
+static void docking_close_socket(void)
+{
+  if (g_dock.vision_sock >= 0)
+  {
+    printf("[DOCK] Vision socket closed\n");
+    close(g_dock.vision_sock);
+    g_dock.vision_sock = -1;
+  }
+  g_dock.vision_buf_len = 0;
+}
+
+static void docking_reset(bool stop_motion)
+{
+  if (stop_motion)
+  {
+    send_motor_velocity(0.0f, 0.0f, 0.0f);
+  }
+  g_dock.active = false;
+  g_dock.test_mode = false;
+  g_dock.state = DOCK_STATE_IDLE;
+  g_dock.docking_start_ms = 0;
+  g_dock.state_start_ms = 0;
+  g_dock.last_vision_ms = 0;
+  g_dock.vision_found = false;
+  g_dock.vision_x = 0.0f;
+  g_dock.vision_z = 0.0f;
+  g_dock.last_status_log_ms = 0;
+  g_dock.last_connect_try_ms = 0;
+  docking_close_socket();
+}
+
+static void docking_set_state(DockState new_state)
+{
+  if (g_dock.state != new_state)
+  {
+    long now = get_time_ms();
+    printf("[DOCK] STATE %s -> %s (state_elapsed=%ldms total_elapsed=%ldms)\n",
+           dock_state_name(g_dock.state), dock_state_name(new_state),
+           now - g_dock.state_start_ms, now - g_dock.docking_start_ms);
+  }
+  g_dock.state = new_state;
+  g_dock.state_start_ms = get_time_ms();
+}
+
+static bool docking_connect_vision_if_needed(void)
+{
+  if (g_dock.vision_sock >= 0)
+  {
+    return true;
+  }
+
+  long now = get_time_ms();
+  if (g_dock.last_connect_try_ms != 0 &&
+      (now - g_dock.last_connect_try_ms) < 1000)
+  {
+    return false;
+  }
+  g_dock.last_connect_try_ms = now;
+
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0)
+  {
+    perror("[DOCK] socket vision");
+    return false;
+  }
+  if (set_nonblock_fd(sock) < 0)
+  {
+    perror("[DOCK] set_nonblock vision");
+    close(sock);
+    return false;
+  }
+
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(9091);
+  inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+
+  int rc = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
+  if (rc < 0 && errno != EINPROGRESS)
+  {
+    printf("[DOCK] Vision connect failed: %s\n", strerror(errno));
+    close(sock);
+    return false;
+  }
+
+  g_dock.vision_sock = sock;
+  g_dock.vision_buf_len = 0;
+  printf("[DOCK] Connected to camera service 127.0.0.1:9091\n");
+  return true;
+}
+
+static bool parse_vision_line(const char *line, bool *found, float *x, float *z)
+{
+  int found_i = 0;
+  float x_f = 0.0f;
+  float z_f = 0.0f;
+  int matched = sscanf(line,
+                       "{\"type\":\"docking_vision\",\"found\":%d,\"x\":%f,\"z\":%f}",
+                       &found_i, &x_f, &z_f);
+  if (matched != 3)
+  {
+    return false;
+  }
+  *found = (found_i != 0);
+  *x = x_f;
+  *z = z_f;
+  return true;
+}
+
+static void docking_poll_vision(void)
+{
+  static bool last_found = false;
+  static bool last_found_valid = false;
+
+  if (g_dock.vision_sock < 0)
+  {
+    g_dock.vision_found = false;
+    return;
+  }
+
+  char recv_buf[256];
+  while (1)
+  {
+    ssize_t n = recv(g_dock.vision_sock, recv_buf, sizeof(recv_buf) - 1, 0);
+    if (n < 0)
+    {
+      if (errno == EAGAIN || errno == EWOULDBLOCK)
+      {
+        break;
+      }
+      printf("[DOCK] Vision recv error: %s\n", strerror(errno));
+      docking_close_socket();
+      g_dock.vision_found = false;
+      break;
+    }
+    if (n == 0)
+    {
+      printf("[DOCK] Vision peer disconnected\n");
+      docking_close_socket();
+      g_dock.vision_found = false;
+      break;
+    }
+    recv_buf[n] = '\0';
+    for (ssize_t i = 0; i < n; i++)
+    {
+      char c = recv_buf[i];
+      if (c == '\n')
+      {
+        g_dock.vision_buf[g_dock.vision_buf_len] = '\0';
+        bool found = false;
+        float x = 0.0f, z = 0.0f;
+        if (parse_vision_line(g_dock.vision_buf, &found, &x, &z))
+        {
+          g_dock.last_vision_ms = get_time_ms();
+          g_dock.vision_found = found;
+          g_dock.vision_x = x;
+          g_dock.vision_z = z;
+          if (!last_found_valid || last_found != found)
+          {
+            printf("[DOCK] Vision found=%d x=%.4f z=%.4f\n", found ? 1 : 0, x,
+                   z);
+            last_found = found;
+            last_found_valid = true;
+          }
+        }
+        else if (g_dock.vision_buf[0] != '\0')
+        {
+          printf("[DOCK] Vision parse skipped: %s\n", g_dock.vision_buf);
+        }
+        g_dock.vision_buf_len = 0;
+      }
+      else if (g_dock.vision_buf_len < (int)sizeof(g_dock.vision_buf) - 1)
+      {
+        g_dock.vision_buf[g_dock.vision_buf_len++] = c;
+      }
+      else
+      {
+        g_dock.vision_buf_len = 0;
+      }
+    }
+  }
+}
+
+static void docking_begin(bool test_mode)
+{
+  g_dock.active = true;
+  g_dock.test_mode = test_mode;
+  g_dock.docking_start_ms = get_time_ms();
+  g_dock.state_start_ms = g_dock.docking_start_ms;
+  g_dock.last_vision_ms = 0;
+  g_dock.vision_found = false;
+  g_dock.vision_x = 0.0f;
+  g_dock.vision_z = 0.0f;
+  g_dock.state = DOCK_STATE_SEARCH_RIGHT;
+  g_dock.last_status_log_ms = 0;
+  (void)docking_connect_vision_if_needed();
+  printf("[DOCK] Start docking mode=%s scan_vx=%.3f align_vx=%.3f approach_vy=%.3f x_tol=%.3f z_target=%.3f z_tol=%.3f\n",
+         test_mode ? "test" : "trajectory", DOCK_SCAN_VX, DOCK_ALIGN_VX,
+         DOCK_APPROACH_VY, DOCK_X_TOL, DOCK_TARGET_Z, DOCK_Y_TOL);
+}
+
+typedef enum
+{
+  DOCK_STEP_IN_PROGRESS = 0,
+  DOCK_STEP_DONE,
+  DOCK_STEP_NOT_FOUND
+} DockStepResult;
+
+static DockStepResult docking_step_once(void)
+{
+  (void)docking_connect_vision_if_needed();
+  docking_poll_vision();
+
+  long now = get_time_ms();
+  if (g_dock.last_status_log_ms == 0 ||
+      (now - g_dock.last_status_log_ms) >= 1000)
+  {
+    long vision_age =
+        (g_dock.last_vision_ms > 0) ? (now - g_dock.last_vision_ms) : -1;
+    printf("[DOCK] Tick state=%s found=%d x=%.4f z=%.4f vision_age=%ldms elapsed=%ldms\n",
+           dock_state_name(g_dock.state), g_dock.vision_found ? 1 : 0,
+           g_dock.vision_x, g_dock.vision_z, vision_age,
+           now - g_dock.docking_start_ms);
+    g_dock.last_status_log_ms = now;
+  }
+
+  if (now - g_dock.docking_start_ms > DOCK_TOTAL_TIMEOUT_MS)
+  {
+    printf("[DOCK] Timeout total=%dms state=%s x=%.4f z=%.4f found=%d\n",
+           DOCK_TOTAL_TIMEOUT_MS, dock_state_name(g_dock.state), g_dock.vision_x,
+           g_dock.vision_z, g_dock.vision_found ? 1 : 0);
+    send_motor_velocity(0.0f, 0.0f, 0.0f);
+    return DOCK_STEP_NOT_FOUND;
+  }
+
+  if (g_dock.vision_found)
+  {
+    if (fabsf(g_dock.vision_x) > DOCK_X_TOL)
+    {
+      docking_set_state(DOCK_STATE_ALIGN_X);
+    }
+    else
+    {
+      docking_set_state(DOCK_STATE_APPROACH_Y);
+    }
+  }
+
+  switch (g_dock.state)
+  {
+  case DOCK_STATE_SEARCH_RIGHT:
+    send_motor_velocity(+DOCK_SCAN_VX, 0.0f, 0.0f);
+    if (now - g_dock.state_start_ms > DOCK_SCAN_TIMEOUT_MS)
+    {
+      printf("[DOCK] Search right timeout=%dms (target not found)\n",
+             DOCK_SCAN_TIMEOUT_MS);
+      docking_set_state(DOCK_STATE_SEARCH_LEFT);
+    }
+    return DOCK_STEP_IN_PROGRESS;
+
+  case DOCK_STATE_SEARCH_LEFT:
+    send_motor_velocity(-DOCK_SCAN_VX, 0.0f, 0.0f);
+    if (now - g_dock.state_start_ms > DOCK_SCAN_TIMEOUT_MS)
+    {
+      printf("[DOCK] Search left timeout=%dms -> NOT_FOUND\n",
+             DOCK_SCAN_TIMEOUT_MS);
+      send_motor_velocity(0.0f, 0.0f, 0.0f);
+      return DOCK_STEP_NOT_FOUND;
+    }
+    return DOCK_STEP_IN_PROGRESS;
+
+  case DOCK_STATE_ALIGN_X:
+    if (!g_dock.vision_found)
+    {
+      send_motor_velocity(0.0f, 0.0f, 0.0f);
+      return DOCK_STEP_IN_PROGRESS;
+    }
+    if (fabsf(g_dock.vision_x) <= DOCK_X_TOL)
+    {
+      printf("[DOCK] X aligned x=%.4f tol=%.4f\n", g_dock.vision_x, DOCK_X_TOL);
+      docking_set_state(DOCK_STATE_APPROACH_Y);
+      send_motor_velocity(0.0f, 0.0f, 0.0f);
+      return DOCK_STEP_IN_PROGRESS;
+    }
+    send_motor_velocity((g_dock.vision_x > 0.0f) ? +DOCK_ALIGN_VX : -DOCK_ALIGN_VX,
+                        0.0f, 0.0f);
+    return DOCK_STEP_IN_PROGRESS;
+
+  case DOCK_STATE_APPROACH_Y:
+    if (!g_dock.vision_found)
+    {
+      send_motor_velocity(0.0f, 0.0f, 0.0f);
+      return DOCK_STEP_IN_PROGRESS;
+    }
+    if (fabsf(g_dock.vision_x) > DOCK_X_TOL)
+    {
+      docking_set_state(DOCK_STATE_ALIGN_X);
+      return DOCK_STEP_IN_PROGRESS;
+    }
+
+    if (g_dock.vision_z > (DOCK_TARGET_Z + DOCK_Y_TOL))
+    {
+      send_motor_velocity(0.0f, +DOCK_APPROACH_VY, 0.0f);
+      return DOCK_STEP_IN_PROGRESS;
+    }
+    if (g_dock.vision_z < (DOCK_TARGET_Z - DOCK_Y_TOL))
+    {
+      send_motor_velocity(0.0f, -DOCK_APPROACH_VY, 0.0f);
+      return DOCK_STEP_IN_PROGRESS;
+    }
+
+    send_motor_velocity(0.0f, 0.0f, 0.0f);
+    printf("[DOCK] Done x=%.4f z=%.4f (target_z=%.4f)\n", g_dock.vision_x,
+           g_dock.vision_z, DOCK_TARGET_Z);
+    return DOCK_STEP_DONE;
+
+  case DOCK_STATE_IDLE:
+  default:
+    return DOCK_STEP_IN_PROGRESS;
+  }
+}
+
 // Helper to get current time in ms
 static long get_time_ms(void)
 {
@@ -54,6 +463,10 @@ void trajectory_init(void)
   g_trajectory.current_index = 0;
   g_trajectory.active = false;
   pthread_mutex_unlock(&g_traj_mutex);
+
+  pthread_mutex_lock(&g_dock_mutex);
+  docking_reset(false);
+  pthread_mutex_unlock(&g_dock_mutex);
 }
 
 void trajectory_set_current_pose(float x, float y, float theta)
@@ -198,8 +611,37 @@ void trajectory_start_at(double start_time)
   }
 }
 
+bool trajectory_start_docking_test(void)
+{
+  pthread_mutex_lock(&g_dock_mutex);
+  if (g_dock.active)
+  {
+    pthread_mutex_unlock(&g_dock_mutex);
+    return false;
+  }
+  docking_begin(true);
+  pthread_mutex_unlock(&g_dock_mutex);
+
+  if (!g_thread_running)
+  {
+    g_thread_running = true;
+    if (pthread_create(&g_traj_thread, NULL, trajectory_thread_func, NULL) !=
+        0)
+    {
+      printf("[DOCK] Failed to create execution thread for docking test\n");
+      g_thread_running = false;
+      return false;
+    }
+  }
+  return true;
+}
+
 void trajectory_stop(void)
 {
+  pthread_mutex_lock(&g_dock_mutex);
+  docking_reset(false);
+  pthread_mutex_unlock(&g_dock_mutex);
+
   pthread_mutex_lock(&g_traj_mutex);
   g_trajectory.active = false;
   pthread_mutex_unlock(&g_traj_mutex);
@@ -275,9 +717,43 @@ void *trajectory_thread_func(void *arg)
     double start_time = g_trajectory.start_time_epoch;
     pthread_mutex_unlock(&g_traj_mutex);
 
-    if (!active || count == 0)
+    pthread_mutex_lock(&g_dock_mutex);
+    bool docking_active = g_dock.active;
+    pthread_mutex_unlock(&g_dock_mutex);
+
+    if ((!active || count == 0) && !docking_active)
     {
       usleep(100000); // Sleep 100ms when idle
+      continue;
+    }
+
+    if (docking_active)
+    {
+      pthread_mutex_lock(&g_dock_mutex);
+      DockStepResult step_result = docking_step_once();
+      bool test_mode = g_dock.test_mode;
+      pthread_mutex_unlock(&g_dock_mutex);
+
+      if (step_result == DOCK_STEP_DONE)
+      {
+        trajectory_stop();
+        const char *arrived_msg = "{\"type\": \"control\", \"status\": \"arrived\"}\n";
+        send_to_laptop_clients(arrived_msg, strlen(arrived_msg));
+        printf("[DOCK] %s complete -> sent arrived\n",
+               test_mode ? "Test docking" : "Trajectory docking");
+        continue;
+      }
+      if (step_result == DOCK_STEP_NOT_FOUND)
+      {
+        trajectory_stop();
+        const char *not_found_msg = "{\"type\": \"control\", \"status\": \"not_found\"}\n";
+        send_to_laptop_clients(not_found_msg, strlen(not_found_msg));
+        printf("[DOCK] %s failed -> sent not_found\n",
+               test_mode ? "Test docking" : "Trajectory docking");
+        continue;
+      }
+
+      usleep(CONTROL_LOOP_DELAY_US);
       continue;
     }
 
@@ -473,28 +949,19 @@ void *trajectory_thread_func(void *arg)
       long elapsed = get_time_ms() - goal_reached_start_time;
       if (elapsed >= ACCEPTANCE_HOLD_TIME_MS)
       {
-        // Goal reached AND held for standard time!
-        trajectory_stop();
-        printf("[TRAJ] Trajectory complete! Cur(%.2f, %.2f) Final(%.2f, %.2f) "
-               "Dist:%.3f Radius:%.3f Held:%ldms\n",
-               cur_x, cur_y, final_point.x, final_point.y, distance_to_final,
-               acceptance_radius, elapsed);
-
-        // Notify laptop that robot has arrived
-        const char *arrived_msg =
-            "{\"type\": \"control\", \"status\": \"arrived\"}\n";
-        send_to_laptop_clients(arrived_msg, strlen(arrived_msg));
-        printf("[TRAJ] Sent arrival notification to laptop\n");
-
-        goal_reached_start_time =
-            0; // Reset for next time (though thread might sleep/exit)
+        pthread_mutex_lock(&g_dock_mutex);
+        if (!g_dock.active)
+        {
+          docking_begin(false);
+          printf("[TRAJ] Acceptance reached. Switch to docking phase.\n");
+        }
+        pthread_mutex_unlock(&g_dock_mutex);
+        goal_reached_start_time = 0;
         continue;
       }
 
       // HOLDING: Send zero velocity while waiting in acceptance zone
-      char hold_cmd[64];
-      snprintf(hold_cmd, sizeof(hold_cmd), "dot_x:0.0000 dot_y:0.0000 dot_theta:0.0000\n");
-      client_manager_broadcast_to_motor(hold_cmd, strlen(hold_cmd));
+      send_motor_velocity(0.0f, 0.0f, 0.0f);
       usleep(CONTROL_LOOP_DELAY_US);
       continue; // Skip PID control while holding
     }
