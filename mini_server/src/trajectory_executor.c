@@ -1,4 +1,5 @@
 #include "trajectory_executor.h"
+#include "camera_docking.h"    // Shared docking constants (port, marker id, ...)
 #include "cJSON.h"
 #include "client_manager.h"
 #include "ekf.h"               // Include EKF header
@@ -66,6 +67,7 @@ typedef struct
   bool vision_found;
   float vision_x;
   float vision_z;
+  char vision_hint[8]; /* "LEFT", "RIGHT", "CENTER", "NONE" — từ color detection */
   int vision_sock;
   char vision_buf[1024];
   int vision_buf_len;
@@ -83,6 +85,7 @@ static DockingCtx g_dock = {
     .vision_found = false,
     .vision_x = 0.0f,
     .vision_z = 0.0f,
+    .vision_hint = "NONE",
     .vision_sock = -1,
     .vision_buf_len = 0,
     .last_status_log_ms = 0,
@@ -152,6 +155,7 @@ static void docking_reset(bool stop_motion)
   g_dock.vision_found = false;
   g_dock.vision_x = 0.0f;
   g_dock.vision_z = 0.0f;
+  strncpy(g_dock.vision_hint, "NONE", sizeof(g_dock.vision_hint));
   g_dock.last_status_log_ms = 0;
   g_dock.last_connect_try_ms = 0;
   docking_close_socket();
@@ -202,8 +206,8 @@ static bool docking_connect_vision_if_needed(void)
   struct sockaddr_in addr;
   memset(&addr, 0, sizeof(addr));
   addr.sin_family = AF_INET;
-  addr.sin_port = htons(9091);
-  inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+  addr.sin_port = htons(CAMERA_DOCKING_PORT);
+  inet_pton(AF_INET, CAMERA_DOCKING_HOST, &addr.sin_addr);
 
   int rc = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
   if (rc < 0 && errno != EINPROGRESS)
@@ -219,22 +223,44 @@ static bool docking_connect_vision_if_needed(void)
   return true;
 }
 
-static bool parse_vision_line(const char *line, bool *found, float *x, float *z)
+static bool parse_vision_line(const char *line, bool *found, float *x, float *y, float *z, char *hint)
 {
   int found_i = 0;
   float x_f = 0.0f;
+  float y_f = 0.0f;
   float z_f = 0.0f;
+  char hint_s[8] = "NONE";
+  /* Format mới: {"type":"docking_vision","found":N,"x":F,"y":F,"z":F,"hint":".."} */
   int matched = sscanf(line,
-                       "{\"type\":\"docking_vision\",\"found\":%d,\"x\":%f,\"z\":%f}",
-                       &found_i, &x_f, &z_f);
-  if (matched != 3)
+                       "{\"type\":\"docking_vision\",\"found\":%d,"
+                       "\"x\":%f,\"y\":%f,\"z\":%f,"
+                       "\"hint\":\"%7[^\"]\"}",
+                       &found_i, &x_f, &y_f, &z_f, hint_s);
+  if (matched >= 4)
   {
-    return false;
+    *found = (found_i != 0);
+    *x = x_f;
+    *y = y_f;
+    *z = z_f;
+    if (matched == 5) strncpy(hint, hint_s, 8);
+    else              strncpy(hint, "NONE", 8);
+    hint[7] = '\0';
+    return true;
   }
-  *found = (found_i != 0);
-  *x = x_f;
-  *z = z_f;
-  return true;
+  /* Fallback: format cũ không có y, không có hint */
+  matched = sscanf(line,
+                   "{\"type\":\"docking_vision\",\"found\":%d,\"x\":%f,\"z\":%f}",
+                   &found_i, &x_f, &z_f);
+  if (matched == 3)
+  {
+    *found = (found_i != 0);
+    *x = x_f;
+    *y = 0.0f;
+    *z = z_f;
+    strncpy(hint, "NONE", 8);
+    return true;
+  }
+  return false;
 }
 
 static void docking_poll_vision(void)
@@ -278,17 +304,24 @@ static void docking_poll_vision(void)
       {
         g_dock.vision_buf[g_dock.vision_buf_len] = '\0';
         bool found = false;
-        float x = 0.0f, z = 0.0f;
-        if (parse_vision_line(g_dock.vision_buf, &found, &x, &z))
+        float x = 0.0f, y = 0.0f, z = 0.0f;
+        char hint[8] = "NONE";
+        if (parse_vision_line(g_dock.vision_buf, &found, &x, &y, &z, hint))
         {
           g_dock.last_vision_ms = get_time_ms();
           g_dock.vision_found = found;
           g_dock.vision_x = x;
           g_dock.vision_z = z;
+          strncpy(g_dock.vision_hint, hint, sizeof(g_dock.vision_hint));
+          g_dock.vision_hint[7] = '\0';
           if (!last_found_valid || last_found != found)
           {
-            printf("[DOCK] Vision found=%d x=%.4f z=%.4f\n", found ? 1 : 0, x,
-                   z);
+            /* x>0: marker bên PHẢI camera → robot cần strafe RIGHT
+             * x<0: marker bên TRÁI camera → robot cần strafe LEFT
+             * ALIGN_X state sẽ xử lý strafe theo vision_x */
+            const char *dir = (x < -0.02f) ? "LEFT" : (x > 0.02f) ? "RIGHT" : "CENTER";
+            printf("[DOCK] Vision found=%d  dir=%-6s x=%+.4f y=%+.4f z=%.4f  hint=%s\n",
+                   found ? 1 : 0, found ? dir : "-", x, y, z, hint);
             last_found = found;
             last_found_valid = true;
           }
@@ -342,6 +375,21 @@ static DockStepResult docking_step_once(void)
   docking_poll_vision();
 
   long now = get_time_ms();
+
+  /* Fix: Stale vision check
+   * Nếu camera service dừng gửi hoặc crash, vision_found giữ giá trị cuối
+   * mãi mãi → robot tiếp tục chạy theo dữ liệu cũ. Cần hủy rõ ràng.
+   */
+  if (g_dock.last_vision_ms > 0 &&
+      (now - g_dock.last_vision_ms) > VISION_STALE_MS)
+  {
+    if (g_dock.vision_found)
+    {
+      printf("[DOCK] Vision stale age=%ldms > %dms -> clear found\n",
+             now - g_dock.last_vision_ms, VISION_STALE_MS);
+    }
+    g_dock.vision_found = false;
+  }
   if (g_dock.last_status_log_ms == 0 ||
       (now - g_dock.last_status_log_ms) >= 1000)
   {
@@ -378,6 +426,13 @@ static DockStepResult docking_step_once(void)
   switch (g_dock.state)
   {
   case DOCK_STATE_SEARCH_RIGHT:
+    /* Nếu color hint chỉ rõ hướng → chuyển ngay, không cần đợi timeout */
+    if (strncmp(g_dock.vision_hint, "LEFT", 4) == 0)
+    {
+      printf("[DOCK] Color hint=LEFT → switch to SEARCH_LEFT immediately\n");
+      docking_set_state(DOCK_STATE_SEARCH_LEFT);
+      return DOCK_STEP_IN_PROGRESS;
+    }
     send_motor_velocity(+DOCK_SCAN_VX, 0.0f, 0.0f);
     if (now - g_dock.state_start_ms > DOCK_SCAN_TIMEOUT_MS)
     {
@@ -388,6 +443,13 @@ static DockStepResult docking_step_once(void)
     return DOCK_STEP_IN_PROGRESS;
 
   case DOCK_STATE_SEARCH_LEFT:
+    /* Nếu color hint chỉ rõ hướng → chuyển ngay */
+    if (strncmp(g_dock.vision_hint, "RIGHT", 5) == 0)
+    {
+      printf("[DOCK] Color hint=RIGHT → switch to SEARCH_RIGHT immediately\n");
+      docking_set_state(DOCK_STATE_SEARCH_RIGHT);
+      return DOCK_STEP_IN_PROGRESS;
+    }
     send_motor_velocity(-DOCK_SCAN_VX, 0.0f, 0.0f);
     if (now - g_dock.state_start_ms > DOCK_SCAN_TIMEOUT_MS)
     {

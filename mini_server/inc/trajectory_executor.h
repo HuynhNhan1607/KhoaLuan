@@ -42,6 +42,7 @@
 #define DOCK_Y_TOL 0.01f
 #define DOCK_SCAN_TIMEOUT_MS 2500
 #define DOCK_TOTAL_TIMEOUT_MS 12000
+#define VISION_STALE_MS 500 // Max age of camera data (ms); older -> treat as not found
 
 typedef struct
 {

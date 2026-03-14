@@ -15,12 +15,13 @@ objp = objp * SQUARE_SIZE
 objpoints = [] # Điểm 3D thực tế
 imgpoints = [] # Điểm 2D trên ảnh
 
-# Đường dẫn đến thư mục ảnh bạn vừa chụp
-path_images = "C:/Users/nhatm/Downloads/camera/images/*.jpg"
+# Đường dẫn ảnh: dùng relative path, chạy từ thư mục mini_server/camera/
+path_images = os.path.join(os.path.dirname(__file__), "images", "*.jpg")
 images = glob.glob(path_images)
 
 if len(images) == 0:
     print("Không tìm thấy ảnh nào trong thư mục!")
+    print(f"  → Đang tìm: {path_images}")
 else:
     for fname in images:
         img = cv2.imread(fname)
@@ -40,11 +41,24 @@ else:
     if len(objpoints) > 0:
         ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, gray.shape[::-1], None, None)
         
-        # LƯU FILE QUAN TRỌNG NHẤT
-        np.savez("C:/Users/nhatm/Downloads/camera/calib_data.npz", mtx=mtx, dist=dist)
-        
+        out_dir = os.path.dirname(__file__)
+
+        # Lưu .npz cho Python (pose_estimate.py)
+        npz_path = os.path.join(out_dir, "calib_data.npz")
+        np.savez(npz_path, mtx=mtx, dist=dist)
+        print(f"Đã lưu: {npz_path}")
+
+        # Lưu .yaml cho C++ OpenCV FileStorage (pose_estimate_service)
+        # cv::FileStorage KHÔNG đọc được .npz (NumPy binary) → cần YAML
+        yaml_path = os.path.join(out_dir, "calib_data.yaml")
+        fs = cv2.FileStorage(yaml_path, cv2.FILE_STORAGE_WRITE)
+        fs.write("mtx", mtx)
+        fs.write("dist", dist)
+        fs.release()
+        print(f"Đã lưu: {yaml_path}")
+
         print("\n--- CHÚC MỪNG ---")
-        print("Đã lưu file calib_data.npz thành công!")
         print("Ma trận Camera (mtx):\n", mtx)
+        print("Hệ số méo (dist):\n", dist)
     else:
         print("Thất bại! Không có ảnh nào đủ tiêu chuẩn để calibrate.")

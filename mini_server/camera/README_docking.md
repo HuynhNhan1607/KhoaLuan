@@ -4,10 +4,9 @@ Tài liệu này mô tả cách chạy `pose_estimate_service` (C++) và tích h
 
 ## 1) Build
 
-Build `mini_server` như cũ:
+Build `mini_server` như cũ (chạy từ thư mục `mini_server/`):
 
 ```bash
-cd mini_server
 ./build.sh robot1
 ```
 
@@ -15,13 +14,23 @@ Nếu máy có OpenCV (`pkg-config opencv4`), script sẽ build thêm:
 
 - `camera/pose_estimate_service`
 
-Build thủ công camera service:
+Build thủ công camera service (chạy từ thư mục `mini_server/`):
 
 ```bash
-g++ -Wall -Wextra -std=c++17 -o camera/pose_estimate_service camera/pose_estimate.cpp $(pkg-config --cflags --libs opencv4)
+# Tải aruco headers nếu chưa có (chạy 1 lần)
+make -C camera deps
+
+# Build
+g++ -Wall -Wextra -std=c++17 \
+    -I./inc -Icamera/vendor/include \
+    -o camera/pose_estimate_service camera/pose_estimate.cpp \
+    $(pkg-config --cflags --libs opencv4) \
+    $(find /usr/lib/aarch64-linux-gnu /usr/local/lib /usr/lib -name 'libopencv_aruco.so.*' 2>/dev/null | head -1)
 ```
 
 ## 2) Runtime thứ tự chạy
+
+Tất cả lệnh chạy từ thư mục `mini_server/`:
 
 1. Chạy camera service trước:
 
@@ -32,7 +41,6 @@ g++ -Wall -Wextra -std=c++17 -o camera/pose_estimate_service camera/pose_estimat
 2. Chạy mini server:
 
 ```bash
-cd mini_server
 ./single_mini-server
 ```
 
