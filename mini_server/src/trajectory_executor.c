@@ -271,6 +271,7 @@ static void docking_poll_vision(void)
   if (g_dock.vision_sock < 0)
   {
     g_dock.vision_found = false;
+    strncpy(g_dock.vision_hint, "NONE", sizeof(g_dock.vision_hint));
     return;
   }
 
@@ -287,6 +288,7 @@ static void docking_poll_vision(void)
       printf("[DOCK] Vision recv error: %s\n", strerror(errno));
       docking_close_socket();
       g_dock.vision_found = false;
+      strncpy(g_dock.vision_hint, "NONE", sizeof(g_dock.vision_hint));
       break;
     }
     if (n == 0)
@@ -294,6 +296,7 @@ static void docking_poll_vision(void)
       printf("[DOCK] Vision peer disconnected\n");
       docking_close_socket();
       g_dock.vision_found = false;
+      strncpy(g_dock.vision_hint, "NONE", sizeof(g_dock.vision_hint));
       break;
     }
     recv_buf[n] = '\0';
@@ -354,6 +357,7 @@ static void docking_begin(bool test_mode)
   g_dock.vision_found = false;
   g_dock.vision_x = 0.0f;
   g_dock.vision_z = 0.0f;
+  strncpy(g_dock.vision_hint, "NONE", sizeof(g_dock.vision_hint));
   g_dock.state = DOCK_STATE_SEARCH_RIGHT;
   g_dock.last_status_log_ms = 0;
   (void)docking_connect_vision_if_needed();
@@ -389,6 +393,7 @@ static DockStepResult docking_step_once(void)
              now - g_dock.last_vision_ms, VISION_STALE_MS);
     }
     g_dock.vision_found = false;
+    strncpy(g_dock.vision_hint, "NONE", sizeof(g_dock.vision_hint));
   }
   if (g_dock.last_status_log_ms == 0 ||
       (now - g_dock.last_status_log_ms) >= 1000)

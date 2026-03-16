@@ -22,3 +22,5 @@ logs/
 *.temp
 
 .venv
+
+KhoaLuan\mini_server\camera\image
