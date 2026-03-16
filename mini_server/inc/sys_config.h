@@ -15,7 +15,7 @@
 // Test mode khi nhấc bánh xe lên:
 // 0 = chế độ bình thường (có UWB + optical flow)
 // 1 = chế độ test (chỉ odometry + IMU, tắt UWB + optical flow)
-#define TEST_MODE_WHEEL_UP 1
+#define TEST_MODE_WHEEL_UP 0
 
 // Optical Flow Enable/Disable:
 // 0 = tắt hoàn toàn optical flow (khi cảm biến hư)

@@ -33,7 +33,7 @@ TARGET    := single_mini-server
 
 # --- Source files ---
 SRC_FILES     := $(wildcard src/*.c)
-VL53_FILES    := $(wildcard vl53l0x/*.c)
+VL53_FILES    := $(filter-out vl53l0x/vl53l0x_addr_init.c, $(wildcard vl53l0x/*.c))
 DB_FILES      := $(wildcard database/*.c)
 ALL_SOURCES   := $(SRC_FILES) $(VL53_FILES) $(DB_FILES)
 

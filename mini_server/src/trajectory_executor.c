@@ -483,12 +483,13 @@ void *trajectory_thread_func(void *arg)
     float search_y = cur_y;
     double transport_offset_x = 0.0, transport_offset_y = 0.0;
     bool is_transport = formation_is_transport_active();
+    bool use_transport_offset = is_transport;
 
-    if (is_transport)
+    if (use_transport_offset)
     {
       if (formation_get_transport_offset(&transport_offset_x, &transport_offset_y))
       {
-        search_x = cur_x - (float)transport_offset_x;
+        // search_x = cur_x - (float)transport_offset_x;
         search_y = cur_y - (float)transport_offset_y;
       }
     }
@@ -525,13 +526,13 @@ void *trajectory_thread_func(void *arg)
     TrajectoryPoint target = g_trajectory.points[lookahead_idx];
 
     // === VIRTUAL STRUCTURE: Convert centroid target to robot target ===
-    if (is_transport)
+    if (use_transport_offset)
     {
       formation_set_centroid_target((double)target.x, (double)target.y);
       double robot_target_x, robot_target_y;
       if (formation_get_robot_target(&robot_target_x, &robot_target_y))
       {
-        target.x = (float)robot_target_x;
+        // target.x = (float)robot_target_x;
         target.y = (float)robot_target_y;
       }
     }
@@ -539,9 +540,9 @@ void *trajectory_thread_func(void *arg)
     // --- STOP CONDITION: Check POSITION (and THETA if enabled) ---
     TrajectoryPoint final_point = g_trajectory.points[count - 1];
 
-    if (is_transport)
+    if (use_transport_offset)
     {
-      final_point.x += (float)transport_offset_x;
+      // final_point.x += (float)transport_offset_x;
       final_point.y += (float)transport_offset_y;
     }
 

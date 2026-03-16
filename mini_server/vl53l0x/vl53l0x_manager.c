@@ -96,13 +96,13 @@ DockConfig vl53l0x_manager_default_config(void)
   c.approach_yaw_gain = 0.5f; /* Hệ số chỉnh yaw khi đang tiến       */
 
   /* Search */
-  c.search_direction = 1; /* +1 = trượt sang phải trước      */
+  c.search_direction = -1; /* +1 = trượt sang phải trước      */
 
   /* Calibration offsets — đo thực nghiệm:
    * Đặt 2 cảm biến cùng khoảng cách, ghi nhận chênh lệch.
    * RIGHT cho ra +20 mm so với LEFT → bù -20 mm cho RIGHT. */
-  c.calib_offset_left_mm = -30;  /* LEFT chuẩn, không cần bù    */
-  c.calib_offset_right_mm = -45; /* RIGHT nhiễu +20 mm → trừ 20 */
+  c.calib_offset_left_mm = 0;    /* LEFT chuẩn, không cần bù    */
+  c.calib_offset_right_mm = -15; /* RIGHT nhiễu +20 mm → trừ 20 */
 
   /* Sensor IO timeout — must be > VL53L0X minimum measurement time (33ms). */
   /* With TCP sends in the same thread, CPU contention can delay I2C polling */
@@ -130,109 +130,53 @@ VL53L0XManager *vl53l0x_manager_init(const DockConfig *config)
   mgr->state = DOCK_STATE_SEARCHING;
   mgr->initialized = false;
 
-  printf("[manager] === KHOI TAO DUAL VL53L0X ===\n");
-  printf("[manager] I2C bus       : %d\n", config->i2c_bus);
-  printf("[manager] GPIO chip     : %s\n", config->gpio_chip);
-  printf("[manager] XSHUT LEFT    : line %u\n", config->gpio_line_left);
-  printf("[manager] XSHUT RIGHT   : line %u\n", config->gpio_line_right);
-  printf("[manager] Addr LEFT     : 0x%02X\n", config->addr_left);
-  printf("[manager] Addr RIGHT    : 0x29 (default)\n\n");
+  /* Dia chi da duoc set san boi vl53l0x_addr_init truoc khi chay server.
+   * Manager chi can mo I2C tai dung dia chi, khong can dung GPIO XSHUT. */
+  printf("[manager] Ket noi cam bien: LEFT=0x%02X  RIGHT=0x29  bus=%d\n",
+         config->addr_left, config->i2c_bus);
 
-  /* ─── Mở GPIO cho XSHUT (ban đầu = LOW → tắt cả hai) ─── */
-  if (!gpio_open_output(&mgr->gpio_left, config->gpio_chip,
-                        config->gpio_line_left, 0, "vl53l0x-xshut-left"))
-  {
-    fprintf(stderr, "[manager] Loi: Khong mo duoc GPIO XSHUT LEFT\n");
-    free(mgr);
-    return NULL;
-  }
-  if (!gpio_open_output(&mgr->gpio_right, config->gpio_chip,
-                        config->gpio_line_right, 0, "vl53l0x-xshut-right"))
-  {
-    fprintf(stderr, "[manager] Loi: Khong mo duoc GPIO XSHUT RIGHT\n");
-    gpio_close(&mgr->gpio_left);
-    free(mgr);
-    return NULL;
-  }
-
-  /* ─── Bước 1: Tắt cả hai (Reset) ─── */
-  printf("[manager] [B1] Tat ca hai cam bien (XSHUT = LOW)...\n");
-  gpio_write(&mgr->gpio_left, 0);
-  gpio_write(&mgr->gpio_right, 0);
-  usleep(10000); /* 10 ms */
-
-  /* ─── Bước 2: Đánh thức con TRÁI ─── */
-  printf("[manager] [B2] Danh thuc cam bien TRAI...\n");
-  gpio_write(&mgr->gpio_left, 1);
-  usleep(5000); /* 5 ms chờ khởi động */
-
-  /* Mở I2C – lúc này TRÁI đang ở 0x29 */
+  /* ─── Mở LEFT tại addr_left đã set sẵn ─── */
   vl53l0x_create(&mgr->sensor_left);
   mgr->sensor_left.i2c_bus = config->i2c_bus;
+  mgr->sensor_left.address = config->addr_left;
   if (!vl53l0x_open(&mgr->sensor_left))
   {
-    fprintf(stderr,
-            "[manager] Loi: Khong mo duoc I2C cho cam bien TRAI (errno=%d)\n",
-            mgr->sensor_left.error);
+    fprintf(stderr, "[manager] Loi: Khong mo I2C LEFT 0x%02X (errno=%d)\n",
+            config->addr_left, mgr->sensor_left.error);
     goto fail;
   }
-
-  /* ─── Bước 3: Đổi địa chỉ con TRÁI ─── */
-  printf("[manager] [B3] Doi dia chi TRAI: 0x29 -> 0x%02X...\n",
-         config->addr_left);
-  vl53l0x_set_address(&mgr->sensor_left, config->addr_left);
-  usleep(2000);
-
-  /* Init TRÁI */
-  printf("[manager]      Khoi tao cam bien TRAI...\n");
   vl53l0x_set_timeout(&mgr->sensor_left, config->sensor_timeout_ms);
   if (!vl53l0x_init(&mgr->sensor_left, true))
   {
-    fprintf(stderr, "[manager] Loi: Khong init duoc cam bien TRAI!\n");
+    fprintf(stderr, "[manager] Loi: Khong init duoc LEFT!\n");
     goto fail;
   }
-  printf("[manager]      TRAI OK (addr=0x%02X)\n\n",
-         vl53l0x_get_address(&mgr->sensor_left));
+  printf("[manager] LEFT  OK (addr=0x%02X)\n", vl53l0x_get_address(&mgr->sensor_left));
 
-  /* ─── Bước 4: Đánh thức con PHẢI ─── */
-  printf("[manager] [B4] Danh thuc cam bien PHAI...\n");
-  gpio_write(&mgr->gpio_right, 1);
-  usleep(5000);
-
-  /* Mở I2C – PHẢI thức dậy với 0x29 */
+  /* ─── Mở RIGHT tại 0x29 (mặc định) ─── */
   vl53l0x_create(&mgr->sensor_right);
   mgr->sensor_right.i2c_bus = config->i2c_bus;
   if (!vl53l0x_open(&mgr->sensor_right))
   {
-    fprintf(stderr,
-            "[manager] Loi: Khong mo duoc I2C cho cam bien PHAI (errno=%d)\n",
+    fprintf(stderr, "[manager] Loi: Khong mo I2C RIGHT 0x29 (errno=%d)\n",
             mgr->sensor_right.error);
     goto fail;
   }
-
-  /* Init PHẢI */
-  printf("[manager]      Khoi tao cam bien PHAI...\n");
   vl53l0x_set_timeout(&mgr->sensor_right, config->sensor_timeout_ms);
   if (!vl53l0x_init(&mgr->sensor_right, true))
   {
-    fprintf(stderr, "[manager] Loi: Khong init duoc cam bien PHAI!\n");
+    fprintf(stderr, "[manager] Loi: Khong init duoc RIGHT!\n");
     goto fail;
   }
-  printf("[manager]      PHAI OK (addr=0x29)\n\n");
+  printf("[manager] RIGHT OK (addr=0x29)\n");
 
-  /* ─── Hoàn tất ─── */
-  printf("[manager] === HOAN TAT ===\n");
-  printf("[manager]   TRAI : 0x%02X\n", vl53l0x_get_address(&mgr->sensor_left));
-  printf("[manager]   PHAI : 0x29\n\n");
-
+  printf("[manager] === HOAN TAT ===\n\n");
   mgr->initialized = true;
   return mgr;
 
 fail:
   vl53l0x_close(&mgr->sensor_left);
   vl53l0x_close(&mgr->sensor_right);
-  gpio_close(&mgr->gpio_left);
-  gpio_close(&mgr->gpio_right);
   free(mgr);
   return NULL;
 }
@@ -249,8 +193,6 @@ void vl53l0x_manager_shutdown(VL53L0XManager *mgr)
 
   vl53l0x_close(&mgr->sensor_left);
   vl53l0x_close(&mgr->sensor_right);
-  gpio_close(&mgr->gpio_left);
-  gpio_close(&mgr->gpio_right);
 
   printf("[manager] Da dong tat ca ket noi.\n");
   free(mgr);
