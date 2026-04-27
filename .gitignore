@@ -13,9 +13,6 @@ sdkconfig.old
 # Python
 __pycache__/
 
-# Logs
-*.log
-logs/
 
 # Temporary files
 *.tmp

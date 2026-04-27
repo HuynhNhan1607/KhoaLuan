@@ -244,6 +244,9 @@ class ApproachManager:
             bool: True if started successfully
         """
         server = self.server
+
+        # Start a trajectory run for Phase 1 (or create a new run on repeated Phase 1 tests).
+        server.begin_trajectory_run("approach")
         
         # Compute trajectories
         trajectories = self.compute_approach_trajectories(use_vector_field)

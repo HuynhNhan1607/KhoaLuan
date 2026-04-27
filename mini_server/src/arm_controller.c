@@ -8,6 +8,7 @@
 #include "arm_controller.h"
 #include "arm_kinematic.h"
 #include "client_manager.h"
+#include "socket.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -21,18 +22,172 @@
 
 static void delay_ms(int ms) { usleep(ms * 1000); }
 
+static bool arm_state_initialized = false;
+static double arm_commanded_servo[6] = {0.0};
+static const char *arm_motion_op = "idle";
+static const char *arm_motion_phase = "idle";
+static unsigned long arm_motion_seq = 0;
+
+static void arm_init_commanded_state(void)
+{
+  if (arm_state_initialized)
+    return;
+
+  arm_commanded_servo[0] = ARM_J0_REST;
+  arm_commanded_servo[1] = ARM_J1_REST;
+  arm_commanded_servo[2] = ARM_J2_REST;
+  arm_commanded_servo[3] = ARM_J3_REST;
+  arm_commanded_servo[4] =
+      arm_calculate_j4_perpendicular_to_x(arm_unmap_angle(0, ARM_J0_REST));
+  arm_commanded_servo[5] = ARM_GRIPPER_OPEN;
+  arm_state_initialized = true;
+}
+
+static void arm_set_motion_context(const char *op, const char *phase)
+{
+  arm_motion_op = op ? op : "idle";
+  arm_motion_phase = phase ? phase : "idle";
+}
+
+static void arm_compute_planar_points(double sv1, double sv2, double sv3,
+                                      double *elbow_r, double *elbow_z,
+                                      double *wrist_r, double *wrist_z,
+                                      double *tcp_r, double *tcp_z)
+{
+  double m1 = arm_unmap_angle(1, sv1);
+  double m2 = arm_unmap_angle(2, sv2);
+  double m3 = arm_unmap_angle(3, sv3);
+
+  double t1 = m1 * M_PI / 180.0;
+  double t2 = m2 * M_PI / 180.0;
+  double t3 = m3 * M_PI / 180.0;
+
+  double angle_1_plot = t1 + M_PI / 2.0;
+  double p1_r = ARM_A2 * cos(angle_1_plot);
+  double p1_z = ARM_D1 + ARM_A2 * sin(angle_1_plot);
+
+  double angle_2_plot = angle_1_plot - t2;
+  double p2_r = p1_r + ARM_A3 * cos(angle_2_plot);
+  double p2_z = p1_z + ARM_A3 * sin(angle_2_plot);
+
+  double angle_3_plot = angle_2_plot - t3;
+  double p3_r = p2_r + ARM_D5 * cos(angle_3_plot);
+  double p3_z = p2_z + ARM_D5 * sin(angle_3_plot);
+
+  if (elbow_r)
+    *elbow_r = p1_r;
+  if (elbow_z)
+    *elbow_z = p1_z;
+  if (wrist_r)
+    *wrist_r = p2_r;
+  if (wrist_z)
+    *wrist_z = p2_z;
+  if (tcp_r)
+    *tcp_r = p3_r;
+  if (tcp_z)
+    *tcp_z = p3_z;
+}
+
+static void arm_emit_motion_snapshot(const char *event)
+{
+  ArmPosition tcp = {0};
+  double elbow_r, elbow_z, wrist_r, wrist_z, tcp_r, tcp_z;
+  char json[1024];
+
+  arm_init_commanded_state();
+  arm_compute_planar_points(arm_commanded_servo[1], arm_commanded_servo[2],
+                            arm_commanded_servo[3], &elbow_r, &elbow_z,
+                            &wrist_r, &wrist_z, &tcp_r, &tcp_z);
+  arm_forward_kinematics(arm_commanded_servo[0], arm_commanded_servo[1],
+                         arm_commanded_servo[2], arm_commanded_servo[3], &tcp);
+
+  snprintf(
+      json, sizeof(json),
+      "{\"type\":\"arm_motion\",\"op\":\"%s\",\"phase\":\"%s\","
+      "\"event\":\"%s\",\"seq\":%lu,"
+      "\"servo\":{\"j0\":%.1f,\"j1\":%.1f,\"j2\":%.1f,\"j3\":%.1f,\"j4\":%.1f,\"j5\":%.1f},"
+      "\"planar\":{\"base\":[0.0,0.0],\"shoulder\":[0.0,%.1f],\"elbow\":[%.1f,%.1f],\"wrist\":[%.1f,%.1f],\"tcp\":[%.1f,%.1f]},"
+      "\"tcp\":{\"x\":%.1f,\"y\":%.1f,\"z\":%.1f,\"phi\":%.1f}}\n",
+      arm_motion_op, arm_motion_phase, event ? event : "snapshot",
+      ++arm_motion_seq, arm_commanded_servo[0], arm_commanded_servo[1],
+      arm_commanded_servo[2], arm_commanded_servo[3], arm_commanded_servo[4],
+      arm_commanded_servo[5], ARM_D1, elbow_r, elbow_z, wrist_r, wrist_z,
+      tcp_r, tcp_z, tcp.x, tcp.y, tcp.z, tcp.phi);
+  send_to_upstream_server(json, (int)strlen(json));
+}
+
+static void arm_emit_ik_plan(const char *op, const char *phase, double x,
+                             double y, double z, double phi_deg,
+                             const ArmAngles *angles)
+{
+  if (!angles)
+    return;
+
+  char json[768];
+  snprintf(json, sizeof(json),
+           "{\"type\":\"arm_plan\",\"op\":\"%s\",\"phase\":\"%s\","
+           "\"event\":\"ik_solution\","
+           "\"target\":{\"x\":%.1f,\"y\":%.1f,\"z\":%.1f,\"phi\":%.1f},"
+           "\"servo\":{\"j0\":%.1f,\"j1\":%.1f,\"j2\":%.1f,\"j3\":%.1f,\"j4\":%.1f,\"j5\":%.1f}}\n",
+           op ? op : "unknown", phase ? phase : "ik", x, y, z, phi_deg,
+           angles->j0, angles->j1, angles->j2, angles->j3, angles->j4,
+           arm_commanded_servo[5]);
+  send_to_upstream_server(json, (int)strlen(json));
+}
+
+static void arm_emit_execute_target(const char *op, const char *phase,
+                                    double robot_x, double robot_y,
+                                    double robot_theta, double object_x,
+                                    double object_y, double object_length,
+                                    double object_width,
+                                    const char *grip_side, double arm_x,
+                                    double arm_y, double arm_z)
+{
+  char json[896];
+  snprintf(json, sizeof(json),
+           "{\"type\":\"arm_plan\",\"op\":\"%s\",\"phase\":\"%s\","
+           "\"event\":\"arm_target\","
+           "\"robot\":{\"x\":%.3f,\"y\":%.3f,\"theta\":%.3f},"
+           "\"object\":{\"x\":%.3f,\"y\":%.3f,\"length\":%.3f,\"width\":%.3f,\"grip_side\":\"%s\"},"
+           "\"arm_target\":{\"x\":%.1f,\"y\":%.1f,\"z\":%.1f}}\n",
+           op ? op : "unknown", phase ? phase : "target", robot_x, robot_y,
+           robot_theta, object_x, object_y, object_length, object_width,
+           grip_side ? grip_side : "unknown", arm_x, arm_y, arm_z);
+  send_to_upstream_server(json, (int)strlen(json));
+}
+
+static void arm_emit_operation_status(const char *op, const char *phase,
+                                      const char *status,
+                                      const char *message)
+{
+  char json[512];
+  snprintf(json, sizeof(json),
+           "{\"type\":\"arm_status\",\"op\":\"%s\",\"phase\":\"%s\","
+           "\"status\":\"%s\",\"message\":\"%s\"}\n",
+           op ? op : "unknown", phase ? phase : "unknown",
+           status ? status : "info", message ? message : "");
+  send_to_upstream_server(json, (int)strlen(json));
+}
+
 static void send_servo_cmd(int channel, double deg)
 {
+  arm_init_commanded_state();
   char cmd[128];
   snprintf(cmd, sizeof(cmd), "{\"cmd\":\"servo\",\"ch\":%d,\"deg\":%.1f}\n",
            channel, deg);
+  if (channel >= 0 && channel < 6)
+  {
+    arm_commanded_servo[channel] = deg;
+  }
   client_manager_broadcast_to_arm(cmd, strlen(cmd));
+  arm_emit_motion_snapshot("servo_cmd");
 }
 
 static void send_servo_off_all(void)
 {
   const char *cmd = "{\"cmd\":\"servo_off\",\"all\":true}\n";
   client_manager_broadcast_to_arm(cmd, strlen(cmd));
+  arm_emit_motion_snapshot("servo_off_all");
 }
 
 /**
@@ -42,6 +197,7 @@ static void send_servo_off_all(void)
 static void send_servo_multi(const int *channels, const double *angles,
                              int count)
 {
+  arm_init_commanded_state();
   char cmd[256];
   int pos = 0;
 
@@ -59,11 +215,16 @@ static void send_servo_multi(const int *channels, const double *angles,
   {
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, "%s%.1f", (i > 0 ? "," : ""),
                     angles[i]);
+    if (channels[i] >= 0 && channels[i] < 6)
+    {
+      arm_commanded_servo[channels[i]] = angles[i];
+    }
   }
 
   pos += snprintf(cmd + pos, sizeof(cmd) - pos, "]}\n");
 
   client_manager_broadcast_to_arm(cmd, strlen(cmd));
+  arm_emit_motion_snapshot("servo_multi_cmd");
 }
 
 /**
@@ -172,6 +333,9 @@ bool arm_gripper(const char *action)
 
 bool arm_pick(double x, double y, double z)
 {
+  arm_set_motion_context("pick", "start");
+  arm_emit_operation_status("pick", "start", "started",
+                            "Starting pick sequence");
   printf("[PICK] Starting pick at (%.1f, %.1f, %.1f)\n", x, y, z);
 
   /* Clear stop flag at start */
@@ -188,9 +352,13 @@ bool arm_pick(double x, double y, double z)
   ArmAngles target_angles;
   if (!arm_ik_solve(x, y, z, ARM_PITCH, 10.0, 90.0, &target_angles))
   {
+    arm_emit_operation_status("pick", "ik_target", "failed",
+                              "Target IK failed");
     printf("[PICK] Position unreachable (IK failed)\n");
     return false;
   }
+
+  arm_emit_ik_plan("pick", "target_ik", x, y, z, ARM_PITCH, &target_angles);
 
   double sv0 = target_angles.j0;
   double sv1 = target_angles.j1;
@@ -213,6 +381,8 @@ bool arm_pick(double x, double y, double z)
     {
       approach_z = test_z;
       approach_found = true;
+      arm_emit_ik_plan("pick", "approach_ik", x, y, test_z, ARM_PITCH,
+                       &approach_angles);
       printf("[PICK] Found approach height: z=%.1f (%.1fmm above target)\n",
              approach_z, dz);
       break;
@@ -230,6 +400,7 @@ bool arm_pick(double x, double y, double z)
   if (arm_is_stop_requested())
     return false;
   printf("[PICK] Step 1: Opening gripper\n");
+  arm_set_motion_context("pick", "step_1_open_gripper");
   send_servo_cmd(5, ARM_GRIPPER_OPEN);
   delay_ms(300);
 
@@ -237,6 +408,7 @@ bool arm_pick(double x, double y, double z)
   if (arm_is_stop_requested())
     return false;
   printf("[PICK] Step 2: Rotating J0 to %.1f°\n", approach_angles.j0);
+  arm_set_motion_context("pick", "step_2_rotate_j0");
   send_servo_cmd(0, approach_angles.j0);
   delay_ms(ARM_MOVE_DELAY_MS);
 
@@ -246,6 +418,7 @@ bool arm_pick(double x, double y, double z)
   double j0_math = arm_unmap_angle(0, approach_angles.j0);
   double j4_angle = arm_calculate_j4_perpendicular_to_x(j0_math);
   printf("[PICK] Step 2b: Setting J4 to %.1f° (perpendicular to X-axis)\n", j4_angle);
+  arm_set_motion_context("pick", "step_2b_set_j4");
   send_servo_cmd(4, j4_angle);
   delay_ms(300);
 
@@ -257,6 +430,7 @@ bool arm_pick(double x, double y, double z)
   if (arm_is_stop_requested())
     return false;
   printf("[PICK] Step 3: Moving to approach position (z=%.1f)\n", approach_z);
+  arm_set_motion_context("pick", "step_3_move_approach");
   send_servo_j123(approach_angles.j1, approach_angles.j2, approach_angles.j3);
   delay_ms(ARM_JOINT_DELAY_MS);
 
@@ -271,6 +445,7 @@ bool arm_pick(double x, double y, double z)
     arm_send_gravity_angles(sv0, sv1, sv2, sv3);
 
     /* Move J1+J2+J3 to target */
+    arm_set_motion_context("pick", "step_4_descend");
     send_servo_j123(sv1, sv2, sv3);
 
     /* Wait for descent (safety wait) */
@@ -281,6 +456,7 @@ bool arm_pick(double x, double y, double z)
   if (arm_is_stop_requested())
     return false;
   printf("[PICK] Step 5: Closing gripper\n");
+  arm_set_motion_context("pick", "step_5_close_gripper");
   send_servo_cmd(5, ARM_GRIPPER_CLOSED);
   delay_ms(ARM_GRIPPER_WAIT_MS + ARM_GRIP_EXTRA_WAIT_MS);
 
@@ -296,9 +472,13 @@ bool arm_pick(double x, double y, double z)
                           approach_angles.j2, approach_angles.j3);
 
   /* Move J1+J2+J3 to approach/lift position */
+  arm_set_motion_context("pick", "step_6_lift");
   send_servo_j123(approach_angles.j1, approach_angles.j2, approach_angles.j3);
   delay_ms(500);
 
+  arm_set_motion_context("pick", "complete");
+  arm_emit_operation_status("pick", "complete", "completed",
+                            "Pick sequence completed");
   printf("[PICK] Pick complete!\n");
   return true;
 }
@@ -307,6 +487,9 @@ bool arm_pick(double x, double y, double z)
 
 bool arm_place(double x, double y, double z)
 {
+  arm_set_motion_context("place", "start");
+  arm_emit_operation_status("place", "start", "started",
+                            "Starting place sequence");
   printf("[PLACE] Starting place at (%.1f, %.1f, %.1f)\n", x, y, z);
 
   /* Clear stop flag at start */
@@ -323,9 +506,13 @@ bool arm_place(double x, double y, double z)
   ArmAngles target_angles;
   if (!arm_ik_solve(x, y, z, ARM_PITCH, 10.0, 90.0, &target_angles))
   {
+    arm_emit_operation_status("place", "ik_target", "failed",
+                              "Target IK failed");
     printf("[PLACE] Position unreachable (IK failed)\n");
     return false;
   }
+
+  arm_emit_ik_plan("place", "target_ik", x, y, z, ARM_PITCH, &target_angles);
 
   double sv0 = target_angles.j0;
   double sv1 = target_angles.j1;
@@ -348,6 +535,8 @@ bool arm_place(double x, double y, double z)
     {
       approach_z = test_z;
       approach_found = true;
+      arm_emit_ik_plan("place", "approach_ik", x, y, test_z, ARM_PITCH,
+                       &approach_angles);
       printf("[PLACE] Found approach height: z=%.1f (%.1fmm above target)\n",
              approach_z, dz);
       break;
@@ -365,6 +554,7 @@ bool arm_place(double x, double y, double z)
   if (arm_is_stop_requested())
     return false;
   printf("[PLACE] Step 1: Rotating J0 to %.1f°\n", approach_angles.j0);
+  arm_set_motion_context("place", "step_1_rotate_j0");
   send_servo_cmd(0, approach_angles.j0);
   delay_ms(ARM_MOVE_DELAY_MS);
 
@@ -376,6 +566,7 @@ bool arm_place(double x, double y, double z)
   if (arm_is_stop_requested())
     return false;
   printf("[PLACE] Step 2: Moving to approach position (z=%.1f)\n", approach_z);
+  arm_set_motion_context("place", "step_2_move_approach");
   send_servo_j123(approach_angles.j1, approach_angles.j2, approach_angles.j3);
   delay_ms(ARM_JOINT_DELAY_MS);
 
@@ -390,6 +581,7 @@ bool arm_place(double x, double y, double z)
     arm_send_gravity_angles(sv0, sv1, sv2, sv3);
 
     /* Move J1+J2+J3 to target */
+    arm_set_motion_context("place", "step_3_descend");
     send_servo_j123(sv1, sv2, sv3);
 
     /* Wait for descent (safety wait) */
@@ -400,6 +592,7 @@ bool arm_place(double x, double y, double z)
   if (arm_is_stop_requested())
     return false;
   printf("[PLACE] Step 4: Opening gripper\n");
+  arm_set_motion_context("place", "step_4_open_gripper");
   send_servo_cmd(5, ARM_GRIPPER_OPEN);
   delay_ms(ARM_GRIPPER_WAIT_MS); /* Wait for gripper to fully open (ESP32 secure servo) */
 
@@ -414,6 +607,7 @@ bool arm_place(double x, double y, double z)
                           approach_angles.j2, approach_angles.j3);
 
   /* Move J1+J2+J3 to approach/lift position */
+  arm_set_motion_context("place", "step_5_lift");
   send_servo_j123(approach_angles.j1, approach_angles.j2, approach_angles.j3);
   delay_ms(500);
 
@@ -424,6 +618,7 @@ bool arm_place(double x, double y, double z)
   if (arm_is_stop_requested())
     return false;
   printf("[PLACE] Step 6a: Rotating J0 to %.1f°\n", ARM_J0_REST);
+  arm_set_motion_context("place", "step_6a_rest_j0");
   send_servo_cmd(0, ARM_J0_REST);
   delay_ms(ARM_MOVE_DELAY_MS);
 
@@ -431,6 +626,7 @@ bool arm_place(double x, double y, double z)
   if (arm_is_stop_requested())
     return false;
   printf("[PLACE] Step 6b: Moving J1 to %.1f°\n", ARM_J1_REST);
+  arm_set_motion_context("place", "step_6b_rest_j1");
   send_servo_cmd(1, ARM_J1_REST);
   delay_ms(ARM_JOINT_DELAY_MS);
 
@@ -438,6 +634,7 @@ bool arm_place(double x, double y, double z)
   if (arm_is_stop_requested())
     return false;
   printf("[PLACE] Step 6c: Moving J2 to %.1f°\n", ARM_J2_REST);
+  arm_set_motion_context("place", "step_6c_rest_j2");
   send_servo_cmd(2, ARM_J2_REST);
   delay_ms(ARM_JOINT_DELAY_MS);
 
@@ -445,9 +642,13 @@ bool arm_place(double x, double y, double z)
   if (arm_is_stop_requested())
     return false;
   printf("[PLACE] Step 6d: Moving J3 to %.1f°\n", ARM_J3_REST);
+  arm_set_motion_context("place", "step_6d_rest_j3");
   send_servo_cmd(3, ARM_J3_REST);
   delay_ms(ARM_JOINT_DELAY_MS);
 
+  arm_set_motion_context("place", "complete");
+  arm_emit_operation_status("place", "complete", "completed",
+                            "Place sequence completed");
   printf("[PLACE] Place complete!\n");
   return true;
 }
@@ -508,6 +709,9 @@ bool arm_execute_grip(double robot_x, double robot_y, double robot_theta,
                       double object_x, double object_y, double object_length,
                       double object_width, const char *grip_side)
 {
+  arm_set_motion_context("execute_grip", "start");
+  arm_emit_operation_status("execute_grip", "start", "started",
+                            "Starting execute_grip planning");
   printf("[GRIP] ======== EXECUTE GRIP ========\n");
   printf("[GRIP] Robot pos: (%.3f, %.3f) theta_ekf: %.2f rad (%.1f deg)\n",
          robot_x, robot_y, robot_theta, robot_theta * 180.0 / M_PI);
@@ -522,6 +726,8 @@ bool arm_execute_grip(double robot_x, double robot_y, double robot_theta,
   if (strcmp(grip_side, "top") != 0 && strcmp(grip_side, "bottom") != 0 &&
       strcmp(grip_side, "left") != 0 && strcmp(grip_side, "right") != 0)
   {
+    arm_emit_operation_status("execute_grip", "validate", "failed",
+                              "Invalid grip_side");
     printf(
         "[GRIP] ERROR: Invalid grip_side '%s'. Must be top/bottom/left/right\n",
         grip_side);
@@ -570,6 +776,8 @@ bool arm_execute_grip(double robot_x, double robot_y, double robot_theta,
   /* Validate robot X position is within object's grippable range */
   if (robot_x < object_x_min || robot_x > object_x_max)
   {
+    arm_emit_operation_status("execute_grip", "validate", "failed",
+                              "Robot X outside grip range");
     printf("[GRIP] ERROR: Robot X position (%.3f) outside valid grip range [%.3f, %.3f]\n",
            robot_x, object_x_min, object_x_max);
     printf("[GRIP]   Robot needs to move along X-axis to align with object!\n");
@@ -667,6 +875,9 @@ bool arm_execute_grip(double robot_x, double robot_y, double robot_theta,
 
   printf("[GRIP] Arm local coords (mm): X=%.1f Y=%.1f Z=%.1f\n", arm_x, arm_y,
          arm_z);
+  arm_emit_execute_target("execute_grip", "arm_target", robot_x, robot_y,
+                          robot_theta, object_x, object_y, object_length,
+                          object_width, grip_side, arm_x, arm_y, arm_z);
 
   /* Step 6: Validate arm reach */
   double arm_reach = sqrt(arm_x * arm_x + arm_y * arm_y);
@@ -689,10 +900,14 @@ bool arm_execute_grip(double robot_x, double robot_y, double robot_theta,
 
   if (success)
   {
+    arm_emit_operation_status("execute_grip", "complete", "completed",
+                              "execute_grip completed");
     printf("[GRIP] ======== GRIP SUCCESS ========\n");
   }
   else
   {
+    arm_emit_operation_status("execute_grip", "complete", "failed",
+                              "execute_grip failed");
     printf("[GRIP] ======== GRIP FAILED ========\n");
   }
 
@@ -705,6 +920,9 @@ bool arm_execute_place(double robot_x, double robot_y, double robot_theta,
                        double object_x, double object_y, double object_length,
                        double object_width, const char *grip_side)
 {
+  arm_set_motion_context("execute_place", "start");
+  arm_emit_operation_status("execute_place", "start", "started",
+                            "Starting execute_place planning");
   printf("[PLACE] ======== EXECUTE PLACE ========\n");
   printf("[PLACE] Robot pos: (%.3f, %.3f) theta_ekf: %.2f rad (%.1f deg)\n",
          robot_x, robot_y, robot_theta, robot_theta * 180.0 / M_PI);
@@ -719,6 +937,8 @@ bool arm_execute_place(double robot_x, double robot_y, double robot_theta,
   if (strcmp(grip_side, "top") != 0 && strcmp(grip_side, "bottom") != 0 &&
       strcmp(grip_side, "left") != 0 && strcmp(grip_side, "right") != 0)
   {
+    arm_emit_operation_status("execute_place", "validate", "failed",
+                              "Invalid grip_side");
     printf("[PLACE] ERROR: Invalid grip_side '%s'. Must be top/bottom/left/right\n",
            grip_side);
     return false;
@@ -803,6 +1023,9 @@ bool arm_execute_place(double robot_x, double robot_y, double robot_theta,
 
   printf("[PLACE] Arm local coords (mm): X=%.1f Y=%.1f Z=%.1f\n", arm_x, arm_y,
          arm_z);
+  arm_emit_execute_target("execute_place", "arm_target", robot_x, robot_y,
+                          robot_theta, object_x, object_y, object_length,
+                          object_width, grip_side, arm_x, arm_y, arm_z);
 
   /* Step 6: Validate arm reach */
   double arm_reach = sqrt(arm_x * arm_x + arm_y * arm_y);
@@ -825,10 +1048,14 @@ bool arm_execute_place(double robot_x, double robot_y, double robot_theta,
 
   if (success)
   {
+    arm_emit_operation_status("execute_place", "complete", "completed",
+                              "execute_place completed");
     printf("[PLACE] ======== PLACE SUCCESS ========\n");
   }
   else
   {
+    arm_emit_operation_status("execute_place", "complete", "failed",
+                              "execute_place failed");
     printf("[PLACE] ======== PLACE FAILED ========\n");
   }
 

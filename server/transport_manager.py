@@ -222,6 +222,10 @@ class TransportManager:
             bool: True if started successfully
         """
         server = self.server
+
+        # Start/reuse trajectory run for Phase 2.
+        # If called right after Phase 1, it reuses the same run for easier traceability.
+        server.begin_trajectory_run("transport")
         
         # Verify robots have arrived (check via approach_manager)
         if not server.approach_manager.check_all_arrived():
@@ -508,23 +512,8 @@ class TransportManager:
         Args:
             centroid_trajectory: List of trajectory points [{x, y, theta, t}, ...]
         """
-        import os
-        
         try:
-            log_dir = "trajectory_logs"
-            os.makedirs(log_dir, exist_ok=True)
-            
-            log_file = os.path.join(log_dir, "phase2.txt")
-            
-            with open(log_file, 'w') as f:
-                f.write("# Phase 2 Transport Trajectory (Centroid)\n")
-                f.write("# Format: x, y, theta, t\n")
-                f.write(f"# Total points: {len(centroid_trajectory)}\n")
-                f.write("# =====================================\n")
-                
-                for point in centroid_trajectory:
-                    f.write(f"{point['x']:.6f}, {point['y']:.6f}, {point['theta']:.6f}, {point['t']:.6f}\n")
-            
+            log_file = self.server.save_phase2_centroid_log(centroid_trajectory)
             self.server.gui.update_monitor(f"Phase 2 trajectory saved to {log_file} ({len(centroid_trajectory)} pts)")
             
         except Exception as e:
