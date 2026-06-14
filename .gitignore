@@ -19,3 +19,15 @@ __pycache__/
 *.temp
 
 .venv
+ 
+# Project specific ignores
+Informations/
+**/Informations/
+FlowChart/
+**/FlowChart/
+docs/
+**/docs/
+build_robot1/
+**/build_robot1/
+robot1.bin
+robot2.bin

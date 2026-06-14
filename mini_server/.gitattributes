@@ -1,0 +1,5 @@
+# Enforce LF line endings for all shell scripts and source files to prevent interpreter errors on Linux
+*.sh text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+Makefile text eol=lf

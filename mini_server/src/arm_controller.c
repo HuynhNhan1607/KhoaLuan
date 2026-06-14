@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -331,7 +332,25 @@ bool arm_gripper(const char *action)
 
 /* ===== Pick Operation ===== */
 
+static bool arm_pick_internal(double x, double y, double z);
+
 bool arm_pick(double x, double y, double z)
+{
+  struct timespec start, end;
+  clock_gettime(CLOCK_MONOTONIC, &start);
+
+  bool success = arm_pick_internal(x, y, z);
+
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  double elapsed_ms = (double)(end.tv_sec - start.tv_sec) * 1e3 + 
+                      (double)(end.tv_nsec - start.tv_nsec) / 1e6;
+  printf("[ARM-PERF] Pick sequence took %.3f ms (%.2f seconds) | Result: %s\n",
+         elapsed_ms, elapsed_ms / 1000.0, success ? "SUCCESS" : "FAILED");
+
+  return success;
+}
+
+static bool arm_pick_internal(double x, double y, double z)
 {
   arm_set_motion_context("pick", "start");
   arm_emit_operation_status("pick", "start", "started",
@@ -485,7 +504,25 @@ bool arm_pick(double x, double y, double z)
 
 /* ===== Place Operation ===== */
 
+static bool arm_place_internal(double x, double y, double z);
+
 bool arm_place(double x, double y, double z)
+{
+  struct timespec start, end;
+  clock_gettime(CLOCK_MONOTONIC, &start);
+
+  bool success = arm_place_internal(x, y, z);
+
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  double elapsed_ms = (double)(end.tv_sec - start.tv_sec) * 1e3 + 
+                      (double)(end.tv_nsec - start.tv_nsec) / 1e6;
+  printf("[ARM-PERF] Place sequence took %.3f ms (%.2f seconds) | Result: %s\n",
+         elapsed_ms, elapsed_ms / 1000.0, success ? "SUCCESS" : "FAILED");
+
+  return success;
+}
+
+static bool arm_place_internal(double x, double y, double z)
 {
   arm_set_motion_context("place", "start");
   arm_emit_operation_status("place", "start", "started",

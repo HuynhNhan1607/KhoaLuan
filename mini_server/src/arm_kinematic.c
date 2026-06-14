@@ -11,6 +11,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <time.h>
 
 /* ===== Constants ===== */
 #ifndef M_PI
@@ -283,8 +284,27 @@ bool arm_ik_fuzzy(double target_r, double target_z, double target_phi,
 
 /* ===== Main IK Entry Point ===== */
 
+static bool arm_ik_solve_internal(double x, double y, double z, double phi_deg, double tol_pos,
+                                  double tol_phi, ArmAngles *angles);
+
 bool arm_ik_solve(double x, double y, double z, double phi_deg, double tol_pos,
                   double tol_phi, ArmAngles *angles) {
+  struct timespec start, end;
+  clock_gettime(CLOCK_MONOTONIC, &start);
+
+  bool success = arm_ik_solve_internal(x, y, z, phi_deg, tol_pos, tol_phi, angles);
+
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  double elapsed_us = (double)(end.tv_sec - start.tv_sec) * 1e6 + 
+                      (double)(end.tv_nsec - start.tv_nsec) / 1e3;
+  printf("[ARM-PERF] IK Solve (x=%.1f, y=%.1f, z=%.1f) took %.3f us | Result: %s\n",
+         x, y, z, elapsed_us, success ? "SUCCESS" : "FAILED");
+
+  return success;
+}
+
+static bool arm_ik_solve_internal(double x, double y, double z, double phi_deg, double tol_pos,
+                                  double tol_phi, ArmAngles *angles) {
   if (!angles)
     return false;
 

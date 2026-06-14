@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -13,6 +14,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include "cJSON.h"
 #include "client_manager.h"
 #include "formation_manager.h"
 #include "json_handler.h"
@@ -467,6 +469,23 @@ void *laptop_server_thread(void *arg)
             buffer[valread] = '\0';
             // printf("[LAPTOP] Received: %s\n", buffer);
 
+            // Intercept ping message from laptop client
+            if (strstr(buffer, "\"type\":\"ping\"") || strstr(buffer, "\"type\": \"ping\""))
+            {
+              cJSON *json = cJSON_ParseWithLength(buffer, valread);
+              if (json)
+              {
+                cJSON *data_json = cJSON_GetObjectItemCaseSensitive(json, "data");
+                cJSON *ts_json = data_json ? cJSON_GetObjectItemCaseSensitive(data_json, "ts") : NULL;
+                double ts = ts_json ? ts_json->valuedouble : 0.0;
+                char pong_msg[256];
+                snprintf(pong_msg, sizeof(pong_msg), "{\"type\":\"pong\",\"data\":{\"ts\":%.6f}}\n", ts);
+                send(i, pong_msg, strlen(pong_msg), 0);
+                cJSON_Delete(json);
+              }
+              continue; // Skip further processing
+            }
+
             // Check if this is start of trajectory JSON or we are accumulating
             bool is_traj_start =
                 (strstr(buffer, "\"type\":\"load_trajectory\"") ||
@@ -891,10 +910,38 @@ int pump_jsonl(int fd)
 
         if (L)
         {
-          size_t raw_len = (line_end + 1) - start;
-          send_to_upstream_server(b[fd].p + start, (int)raw_len);
+          // Intercept ping from ESP32 client
+          char *line_ptr = b[fd].p + start;
+          bool is_ping = (memmem(line_ptr, L, "\"type\":\"ping\"", 13) != NULL ||
+                          memmem(line_ptr, L, "\"type\": \"ping\"", 14) != NULL);
+          if (is_ping)
+          {
+            char *tmp_buf = malloc(L + 1);
+            if (tmp_buf)
+            {
+              memcpy(tmp_buf, line_ptr, L);
+              tmp_buf[L] = '\0';
+              cJSON *json = cJSON_Parse(tmp_buf);
+              if (json)
+              {
+                cJSON *data_json = cJSON_GetObjectItemCaseSensitive(json, "data");
+                cJSON *ts_json = data_json ? cJSON_GetObjectItemCaseSensitive(data_json, "ts") : NULL;
+                double ts = ts_json ? ts_json->valuedouble : 0.0;
+                char pong_msg[256];
+                snprintf(pong_msg, sizeof(pong_msg), "{\"type\":\"pong\",\"data\":{\"ts\":%.6f}}\n", ts);
+                send(fd, pong_msg, strlen(pong_msg), 0);
+                cJSON_Delete(json);
+              }
+              free(tmp_buf);
+            }
+          }
+          else
+          {
+            size_t raw_len = (line_end + 1) - start;
+            send_to_upstream_server(b[fd].p + start, (int)raw_len);
 
-          json_handler_add_message(b[fd].p + start, (int)L);
+            json_handler_add_message(b[fd].p + start, (int)L);
+          }
         }
         // nhảy sang đầu dòng kế tiếp, KHÔNG memmove
         start = line_end + 1;
@@ -1133,5 +1180,56 @@ void *server_thread(void *arg)
 
   client_manager_destroy();
   close(server_fd);
+  return NULL;
+}
+
+static void print_laptop_rtt(void)
+{
+  pthread_mutex_lock(&g_laptop_sockets_mutex);
+  for (int i = 0; i < MAX_LAPTOP_CLIENTS; i++)
+  {
+    if (g_laptop_sockets[i] != -1)
+    {
+      struct tcp_info info;
+      socklen_t len = sizeof(info);
+      if (getsockopt(g_laptop_sockets[i], IPPROTO_TCP, TCP_INFO, &info, &len) == 0)
+      {
+        double rtt = (double)info.tcpi_rtt / 1000.0;
+        struct sockaddr_in addr;
+        socklen_t addr_len = sizeof(addr);
+        char ip_str[INET_ADDRSTRLEN] = "unknown";
+        int port = 0;
+        if (getpeername(g_laptop_sockets[i], (struct sockaddr*)&addr, &addr_len) == 0)
+        {
+          inet_ntop(AF_INET, &addr.sin_addr, ip_str, sizeof(ip_str));
+          port = ntohs(addr.sin_port);
+        }
+        printf("[LATENCY] Laptop client %s:%d | TCP RTT = %.3f ms\n",
+               ip_str, port, rtt);
+      }
+      else
+      {
+        printf("[LATENCY] Laptop client fd=%d | Failed to get TCP RTT\n",
+               g_laptop_sockets[i]);
+      }
+    }
+  }
+  pthread_mutex_unlock(&g_laptop_sockets_mutex);
+}
+
+void *latency_monitor_thread(void *arg)
+{
+  (void)arg;
+  printf("[LATENCY] Latency monitor thread started\n");
+  while (g_running)
+  {
+    sleep(2); // Print metrics every 2 seconds
+    
+    printf("\n=== TCP LATENCY METRICS ===\n");
+    print_laptop_rtt();
+    client_manager_print_rtt();
+    printf("===========================\n");
+  }
+  printf("[LATENCY] Latency monitor thread exiting\n");
   return NULL;
 }

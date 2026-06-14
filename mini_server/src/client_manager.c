@@ -206,3 +206,28 @@ void client_manager_destroy(void)
     pthread_mutex_unlock(&clients_mutex);
     printf("[CLIENT_MANAGER] All clients disconnected\n");
 }
+
+void client_manager_print_rtt(void)
+{
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < MAX_CLIENTS; i++)
+    {
+        if (clients[i].active && clients[i].sock != -1)
+        {
+            struct tcp_info info;
+            socklen_t len = sizeof(info);
+            if (getsockopt(clients[i].sock, IPPROTO_TCP, TCP_INFO, &info, &len) == 0)
+            {
+                double rtt = (double)info.tcpi_rtt / 1000.0;
+                printf("[LATENCY] ESP32 client %s:%d | TCP RTT = %.3f ms\n",
+                       clients[i].ip, clients[i].port, rtt);
+            }
+            else
+            {
+                printf("[LATENCY] ESP32 client %s:%d | Failed to get TCP RTT\n",
+                       clients[i].ip, clients[i].port);
+            }
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+}

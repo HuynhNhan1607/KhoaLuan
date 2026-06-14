@@ -112,6 +112,18 @@ int main(void)
     return 1;
   }
 
+  /* Commented out to disable TCP latency console logging
+  pthread_t th_latency;
+  if (pthread_create(&th_latency, NULL, latency_monitor_thread, NULL) != 0)
+  {
+    perror("Failed to create latency monitor thread");
+  }
+  else
+  {
+    pthread_detach(th_latency);
+  }
+  */
+
   printf("Mini-Server running. Press Ctrl-C to stop.\n");
 
   // Wait for threads to complete

@@ -19,7 +19,6 @@ gcc -Wall -Wextra -std=c11 \
     -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L \
     -DROBOT_ID=$ROBOT_NUM \
     -I./inc -I./vl53l0x \
-    -o single_mini-server ./src/*.c ./vl53l0x/*.c ./database/*.c \
+    -o single_mini-server ./src/*.c ./vl53l0x/gpio_helper.c ./vl53l0x/vl53l0x_c.c ./vl53l0x/vl53l0x_manager.c ./database/*.c \
     -lsqlite3 -lpthread -lm -lgpiod -li2c
-
 echo "Build done for $ROBOT_ID! Run with ./single_mini-server"

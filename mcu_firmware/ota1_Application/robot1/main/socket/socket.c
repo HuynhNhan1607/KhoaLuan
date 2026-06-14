@@ -82,8 +82,8 @@ void task_socket(void *pvParameters) {
         esp_restart();
       } else if (sscanf(rx_buffer, "dot_x:%f dot_y:%f dot_theta:%f", &dot_x,
                         &dot_y, &dot_theta) == 3) {
-        // ESP_LOGW(TAG_Socket, "Received dot_x: %f, dot_y: %f, dot_theta: %f",
-        //          dot_x, dot_y, dot_theta);
+        ESP_LOGW(TAG_Socket, "Received dot_x: %f, dot_y: %f, dot_theta: %f",
+                 dot_x, dot_y, dot_theta);
         // MecanumSpeedControl(theta, dot_x, dot_y, dot_theta);
         set_robot_status(dot_x, dot_y, dot_theta);
       }
@@ -106,7 +106,7 @@ void task_socket(void *pvParameters) {
         ESP_LOGW(TAG_Socket, "Starting PID Autotune with default parameters");
         motor_start_autotune();
       }
-      // PID Autotune with custom parameters: RPM:xxx PWM:yyy
+      // RPM change to Rad/s!!!
       else if (strncmp(rx_buffer, "RPM:", 4) == 0) {
         float target_rpm = 4.0f; // Default
         float relay_pwm = 60.0f; // Default
@@ -137,7 +137,7 @@ void task_socket(void *pvParameters) {
   vTaskDelete(NULL);
 }
 
-#define SEND_RPM 0
+#define SEND_RPM 1
 
 int64_t start_time;
 wheel_infor_t wheel_infor[4] = {0};
