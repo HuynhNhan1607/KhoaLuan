@@ -9,12 +9,14 @@
 #define MAX_TRAJECTORY_POINTS 500
 #define CONTROL_LOOP_RATE_HZ 20
 #define CONTROL_LOOP_DELAY_US (1000000 / CONTROL_LOOP_RATE_HZ)
+#define DOCKING_LOOP_RATE_HZ 10
+#define DOCKING_LOOP_DELAY_US (1000000 / DOCKING_LOOP_RATE_HZ)
 
 // Pure Pursuit / Constant Velocity Mode parameters
 #define LOOKAHEAD_DISTANCE \
-  0.20f                                // Lookahead distance in meters (increased for stability)
-#define MIN_LOOKAHEAD_DISTANCE 0.05f   // Minimum lookahead when near goal
-#define ACCEPTANCE_RADIUS 0.02f        // Final goal acceptance radius (2cm)
+  0.20f                              // Lookahead distance in meters (increased for stability)
+#define MIN_LOOKAHEAD_DISTANCE 0.05f // Minimum lookahead when near goal
+#define ACCEPTANCE_RADIUS 0.04f      // Final goal acceptance radius (4cm)
 #define ACCEPTANCE_ANGLE \
   0.015f                             // Final goal acceptance angle (approx 3 degrees)
 #define ACCEPTANCE_HOLD_TIME_MS 1500 // Hold time in ms at goal before stopping (reduced)
@@ -76,5 +78,8 @@ bool trajectory_is_running(void);
 // Helper to set current robot position for the controller
 // This should be called by the localization thread or main loop updates
 void trajectory_set_current_pose(float x, float y, float theta);
+
+// Rotate in place until heading matches target_theta (radians, blocking)
+void trajectory_correct_heading(float target_theta);
 
 #endif // TRAJECTORY_EXECUTOR_H

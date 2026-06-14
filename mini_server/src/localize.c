@@ -1,5 +1,6 @@
 #include "localize.h"
 #include "ekf.h"
+#include "formation_manager.h"
 #include "socket.h"
 #include <pthread.h>
 #include "sys_config.h"
@@ -356,6 +357,13 @@ bool dwm_read_tlv_response(DWMDevice *device, PositionData *position)
 
         align_position(position);        // RBF Warping
         compensate_uwb_offset(position); // Bù offset sensor UWB
+
+        if (formation_is_transport_active())
+        {
+          position->coordinates.x -= 0.15f; // Shift centroid towards object
+          position->coordinates.y += 0.05f;
+          // printf("[DEBUG] Transport mode active - applying additional centroid shift\n");
+        }
 
         // printf("[DEBUG] Successfully parsed position: X=%.3fm, Y=%.3fm,
         // Z=%.3fm, Quality=%d\n",

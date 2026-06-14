@@ -8,5 +8,6 @@ void client_manager_broadcast(const char *buffer, int len);
 void client_manager_broadcast_to_motor(const char *buffer, int len);
 void client_manager_broadcast_to_arm(const char *buffer, int len);
 void client_manager_destroy(void);
+void client_manager_print_rtt(void);
 
 #endif // CLIENT_MANAGER_H_

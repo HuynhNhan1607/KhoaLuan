@@ -16,6 +16,7 @@ extern pthread_mutex_t g_optical_mutex;
 extern ekf_t g_ekf;
 extern pthread_mutex_t g_ekf_mutex;
 #include "trajectory_executor.h"
+#include "docking.h"
 
 static struct gpiod_chip *chip = NULL;
 struct gpiod_line *line = NULL;
@@ -69,6 +70,7 @@ int main(void)
 
   gpio_init();
   trajectory_init();
+  docking_init();
 
   pthread_t th_server, th_laptop_server, th_localize, th_optical_flow;
 
@@ -109,6 +111,18 @@ int main(void)
     pthread_join(th_localize, NULL);
     return 1;
   }
+
+  /* Commented out to disable TCP latency console logging
+  pthread_t th_latency;
+  if (pthread_create(&th_latency, NULL, latency_monitor_thread, NULL) != 0)
+  {
+    perror("Failed to create latency monitor thread");
+  }
+  else
+  {
+    pthread_detach(th_latency);
+  }
+  */
 
   printf("Mini-Server running. Press Ctrl-C to stop.\n");
 

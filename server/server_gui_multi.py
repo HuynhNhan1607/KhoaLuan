@@ -288,6 +288,19 @@ class ServerGUI:
                                              foreground="gray")
         self.phase2_status_label.pack(pady=3)
 
+        # ========== DOCKING TEST ==========
+        dock_frame = ttk.LabelFrame(scrollable_frame, text="Docking Test (VL53L0X)", padding=5)
+        dock_frame.pack(fill="x", padx=5, pady=5)
+        
+        dock_row = ttk.Frame(dock_frame)
+        dock_row.pack(fill="x", pady=2)
+        ttk.Button(dock_row, text="Start Docking",
+                  command=lambda: self.server.send_docking_test(1)).pack(side="left", padx=3)
+        ttk.Button(dock_row, text="Stop Docking",
+                  command=lambda: self.server.send_stop_docking(1)).pack(side="left", padx=3)
+        self.dock_indicator = tk.Label(dock_row, text="Idle", bg="#9E9E9E", fg="white", width=12)
+        self.dock_indicator.pack(side="left", padx=5)
+
 
     def _setup_robot_control_tab(self, parent):
         """Setup the robot control tab with nested tabs for 3 robots"""
@@ -715,11 +728,15 @@ class ServerGUI:
             indicator.config(text="Aborted", bg="#F44336")
         self.phase2_ready_label.config(text="")
     
-    def update_arrival_status(self, robot_id, arrived):
-        """Update arrival status indicator for a robot"""
+    def update_arrival_status(self, robot_id, status):
+        """Update arrival status indicator for a robot
+        status: 'arrived', 'in_progress', 'not_found'
+        """
         if robot_id in self.arrival_indicators:
-            if arrived:
+            if status == 'arrived':
                 self.arrival_indicators[robot_id].config(text="Arrived", bg="#4CAF50")
+            elif status == 'not_found':
+                self.arrival_indicators[robot_id].config(text="Not Found", bg="#F44336")
             else:
                 self.arrival_indicators[robot_id].config(text="In Progress", bg="#FFC107")
         
@@ -775,6 +792,18 @@ class ServerGUI:
             self.phase2_start_btn.config(state="normal")
         else:
             self.phase2_status_label.config(text=f"Status: {status}", foreground="blue")
+    
+    def update_docking_status(self, robot_id, status):
+        """Update docking test indicator"""
+        if hasattr(self, 'dock_indicator'):
+            if status == 'complete':
+                self.dock_indicator.config(text="Docked", bg="#4CAF50")
+            elif status == 'active':
+                self.dock_indicator.config(text="Docking...", bg="#FFC107")
+            elif status == 'error':
+                self.dock_indicator.config(text="NOT FOUND", bg="#F44336")
+            else:
+                self.dock_indicator.config(text="Idle", bg="#9E9E9E")
     
     def _open_map_popup(self):
         """Open the trajectory map in a separate popup window"""

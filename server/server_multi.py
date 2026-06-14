@@ -74,6 +74,14 @@ class Server:
         self.log_writers = {}        # {(robot_id, data_type): csv_writer}
         self.start_times = {}
         self.supported_types = ["encoder", "bno055", "log", "position", "pid"]
+        self.common_start_time = None
+
+        # Trajectory log run/session management
+        self.current_trajectory_run_id = None
+        self.current_trajectory_run_phase = None
+        self.current_trajectory_run_last_activity = None
+        self.current_trajectory_log_seq = 0
+        self.trajectory_run_counter = 0
         
         # ========== PHASE 1: APPROACH STATE ==========
         # Path Planner and Formation planners
@@ -222,8 +230,8 @@ class Server:
         if not self.log_data:
             return
             
-        # If this is our first log file, initialize the common start time
-        if not hasattr(self, 'common_start_time') or not self.log_files:
+        # Keep a single session base time shared with trajectory logging.
+        if self.common_start_time is None:
             self.common_start_time = time.time()
         
         # Skip if this type is already being logged for this robot
@@ -275,14 +283,118 @@ class Server:
         self.log_files = {}
         self.log_writers = {}
         self.start_times = {}
+
+    def begin_trajectory_run(self, trigger_phase):
+        """
+        Start/reuse a trajectory logging run.
+
+        Smart policy:
+        - Reuse current run for Approach -> Transport transition.
+        - Start a new run for repeated same-phase tests (Approach->Approach, Transport->Transport).
+        - Start a new run after a long idle period.
+        """
+        now = time.time()
+        idle_timeout_sec = 120.0
+
+        should_start_new = self.current_trajectory_run_id is None
+
+        if not should_start_new and self.current_trajectory_run_last_activity is not None:
+            if now - self.current_trajectory_run_last_activity > idle_timeout_sec:
+                should_start_new = True
+
+        if not should_start_new:
+            same_phase_repeat = (trigger_phase == self.current_trajectory_run_phase)
+            reverse_cycle = (
+                trigger_phase in ("approach", "test") and
+                self.current_trajectory_run_phase == "transport"
+            )
+            if same_phase_repeat or reverse_cycle:
+                should_start_new = True
+
+        if should_start_new:
+            self.common_start_time = now
+            self.trajectory_run_counter += 1
+            session_id = time.strftime('%Y%m%d_%H%M%S', time.localtime(self.common_start_time))
+            self.current_trajectory_run_id = f"{session_id}_run{self.trajectory_run_counter:03d}"
+            self.current_trajectory_log_seq = 0
+            self.gui.update_monitor(
+                f"Trajectory log run started: {self.current_trajectory_run_id} (trigger={trigger_phase})"
+            )
+
+        self.current_trajectory_run_phase = trigger_phase
+        self.current_trajectory_run_last_activity = now
+
+        run_dir = os.path.join("trajectory_logs", self.current_trajectory_run_id)
+        os.makedirs(run_dir, exist_ok=True)
+        return self.current_trajectory_run_id
+
+    def _save_robot_trajectory_log(self, robot_id, trajectory_list, phase, meta=None):
+        """Write a robot trajectory log to a unique file in the current run directory."""
+        if self.current_trajectory_run_id is None:
+            self.begin_trajectory_run(phase)
+
+        run_dir = os.path.join("trajectory_logs", self.current_trajectory_run_id)
+        os.makedirs(run_dir, exist_ok=True)
+
+        self.current_trajectory_log_seq += 1
+        log_filename = os.path.join(
+            run_dir,
+            f"{phase}_robot_{robot_id}_{self.current_trajectory_log_seq:03d}.txt"
+        )
+
+        with open(log_filename, "w") as f:
+            f.write(f"# Trajectory for Robot {robot_id}\n")
+            f.write(f"# phase: {phase}\n")
+            f.write(f"# run_id: {self.current_trajectory_run_id}\n")
+            f.write("# x, y, theta, t\n")
+            for point in trajectory_list:
+                x = point['x']
+                y = point['y']
+                theta = point.get('theta', 0.0)
+                t = point['t']
+                f.write(f"{x:.4f}, {y:.4f}, {theta:.4f}, {t:.3f}\n")
+
+        self.current_trajectory_run_last_activity = time.time()
+        return log_filename
+
+    def save_phase2_centroid_log(self, centroid_trajectory):
+        """Write Phase 2 centroid trajectory to a unique file in the current run directory."""
+        phase = "transport"
+        if self.current_trajectory_run_id is None:
+            self.begin_trajectory_run(phase)
+
+        run_dir = os.path.join("trajectory_logs", self.current_trajectory_run_id)
+        os.makedirs(run_dir, exist_ok=True)
+
+        self.current_trajectory_log_seq += 1
+        log_file = os.path.join(
+            run_dir,
+            f"phase2_centroid_{self.current_trajectory_log_seq:03d}.txt"
+        )
+
+        with open(log_file, 'w') as f:
+            f.write("# Phase 2 Transport Trajectory (Centroid)\n")
+            f.write("# Format: x, y, theta, t\n")
+            f.write(f"# run_id: {self.current_trajectory_run_id}\n")
+            f.write(f"# Total points: {len(centroid_trajectory)}\n")
+            f.write("# =====================================\n")
+
+            for point in centroid_trajectory:
+                f.write(f"{point['x']:.6f}, {point['y']:.6f}, {point['theta']:.6f}, {point['t']:.6f}\n")
+
+        self.current_trajectory_run_last_activity = time.time()
+        return log_file
     
     def _setup_sync_log_file(self):
         """Setup sync position log file for replay capability (like ROS bag)"""
         try:
             log_dir = "logs"
             os.makedirs(log_dir, exist_ok=True)
-            session_id = time.strftime('%Y%m%d_%H%M%S')
-            log_filename = f"{log_dir}/sync_position_log_{session_id}.csv"
+            if self.common_start_time is None:
+                self.common_start_time = time.time()
+            session_id = time.strftime('%Y%m%d_%H%M%S', time.localtime(self.common_start_time))
+            run_suffix = self.current_trajectory_run_id or session_id
+            log_filename = f"{log_dir}/sync_position_log_{run_suffix}.csv"
             
             self.sync_log_file = open(log_filename, "w", newline='')
             self.sync_log_writer = csv.writer(self.sync_log_file)
@@ -667,6 +779,22 @@ class Server:
                                             self.handle_transport_completion(robot_id)
                                         else:
                                             self.handle_arrival_notification(robot_id)
+                                    elif status == 'docking_complete':
+                                        self.gui.update_monitor(
+                                            f"Robot {robot_id}: DOCKING COMPLETE — VL53L0X aligned!"
+                                        )
+                                        self.gui.update_docking_status(robot_id, 'complete')
+                                    elif status == 'docking_started':
+                                        self.gui.update_monitor(
+                                            f"Robot {robot_id}: Docking started"
+                                        )
+                                        self.gui.update_docking_status(robot_id, 'active')
+                                    elif status == 'docking_not_found':
+                                        self.gui.update_monitor(
+                                            f"Robot {robot_id}: DOCKING FAILED — object not found!"
+                                        )
+                                        self.gui.update_docking_status(robot_id, 'error')
+                                        self.gui.update_arrival_status(robot_id, 'not_found')
                                     else:
                                         self.gui.update_monitor(
                                             f"Robot {robot_id}: Control status: {status}"
@@ -993,19 +1121,8 @@ class Server:
             
             # Log trajectory to file for debugging
             try:
-                log_dir = "trajectory_logs"
-                os.makedirs(log_dir, exist_ok=True)
-                log_filename = os.path.join(log_dir, f"robot_{robot_id}.txt")
-                with open(log_filename, "w") as f:
-                    f.write(f"# Trajectory for Robot {robot_id}\n")
-                    f.write("# x, y, theta, t\n")
-                    for point in trajectory_list:
-                        # Include theta
-                        x = point['x']
-                        y = point['y']
-                        theta = point.get('theta', 0.0)
-                        t = point['t']
-                        f.write(f"{x:.4f}, {y:.4f}, {theta:.4f}, {t:.3f}\n")
+                phase = (meta or {}).get("phase", "unknown")
+                log_filename = self._save_robot_trajectory_log(robot_id, trajectory_list, phase, meta=meta)
                 self.gui.update_monitor(f"Robot {robot_id}: Trajectory logged to {log_filename}")
             except Exception as log_e:
                 self.gui.update_monitor(f"Robot {robot_id}: Warning - failed to log trajectory: {log_e}")
@@ -1060,6 +1177,41 @@ class Server:
             for rid in self.robot_connections.keys():
                 self.emergency_stop(rid)
 
+    def send_docking_test(self, robot_id):
+        """Send start_docking command to test VL53L0X docking independently"""
+        if robot_id not in self.robot_connections:
+            self.gui.update_monitor(f"Robot {robot_id}: Not connected")
+            return
+        
+        payload = {
+            "type": "control",
+            "cmd": "start_docking"
+        }
+        try:
+            sock = self.robot_connections[robot_id]
+            json_str = json.dumps(payload)
+            sock.sendall((json_str + "\n").encode())
+            self.gui.update_monitor(f"🔍 Robot {robot_id}: Sent start_docking command")
+        except Exception as e:
+            self.gui.update_monitor(f"Robot {robot_id}: Error sending docking command: {e}")
+
+    def send_stop_docking(self, robot_id):
+        """Send stop_docking command"""
+        if robot_id not in self.robot_connections:
+            return
+        
+        payload = {
+            "type": "control",
+            "cmd": "stop_docking"
+        }
+        try:
+            sock = self.robot_connections[robot_id]
+            json_str = json.dumps(payload)
+            sock.sendall((json_str + "\n").encode())
+            self.gui.update_monitor(f"Robot {robot_id}: Sent stop_docking command")
+        except Exception as e:
+            self.gui.update_monitor(f"Robot {robot_id}: Error: {e}")
+
     def send_set_pid(self, robot_id):
         """Send PID values to a specific robot"""
         if robot_id not in self.robot_connections:
@@ -1085,6 +1237,9 @@ class Server:
         if robot_id not in self.robot_connections:
             self.gui.update_monitor(f"Robot {robot_id} is not connected")
             return
+
+        # Repeated test runs should create a fresh trajectory log run.
+        self.begin_trajectory_run("test")
         
         try:
             # Generate the test trajectory (list of (x,y) tuples)

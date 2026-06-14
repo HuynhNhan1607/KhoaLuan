@@ -1,11 +1,14 @@
 #include "client_manager.h"
 #include "arm_controller.h"
 #include <arpa/inet.h>
+#include <errno.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #define MAX_CLIENTS 10
@@ -48,6 +51,18 @@ int client_manager_add(int sock, const char *ip, int port)
             clients[i].port = port;
             clients[i].active = true;
             idx = i;
+
+            /* ── Prevent blocking send() from stalling real-time loops ── */
+            /* SO_SNDTIMEO: send() will timeout after 10ms instead of     */
+            /*              blocking indefinitely (can stall docking loop) */
+            struct timeval snd_tv = {.tv_sec = 0, .tv_usec = 10000}; /* 10 ms */
+            setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &snd_tv, sizeof(snd_tv));
+
+            /* TCP_NODELAY: disable Nagle algorithm — send small motor    */
+            /*              commands immediately without coalescing delay  */
+            int nodelay = 1;
+            setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+
             printf("[CLIENT_MANAGER] Added: %s:%d at slot %d\n", ip, port, i);
 
             // Check if this is ESP32 ARM controller (IP ending with .5)
@@ -96,8 +111,10 @@ void client_manager_broadcast(const char *buffer, int len)
         if (clients[i].active)
         {
             active_count++;
-            if (send(clients[i].sock, buffer, len, MSG_NOSIGNAL) < 0)
+            if (send(clients[i].sock, buffer, len, MSG_NOSIGNAL | MSG_DONTWAIT) < 0)
             {
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                    continue; /* buffer full — skip, don't disconnect */
                 printf("[CLIENT_MANAGER] Error sending to %s:%d - removing dead client\n",
                        clients[i].ip, clients[i].port);
                 close(clients[i].sock);
@@ -126,8 +143,10 @@ void client_manager_broadcast_to_motor(const char *buffer, int len)
             const char *last_octet = strrchr(clients[i].ip, '.');
             if (last_octet != NULL && strcmp(last_octet, ".3") == 0)
             {
-                if (send(clients[i].sock, buffer, len, MSG_NOSIGNAL) < 0)
+                if (send(clients[i].sock, buffer, len, MSG_NOSIGNAL | MSG_DONTWAIT) < 0)
                 {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK)
+                        continue; /* buffer full — skip, next cycle sends updated cmd */
                     printf("[CLIENT_MANAGER] Error sending to motor %s:%d - removing dead client\n",
                            clients[i].ip, clients[i].port);
                     close(clients[i].sock);
@@ -155,8 +174,10 @@ void client_manager_broadcast_to_arm(const char *buffer, int len)
             const char *last_octet = strrchr(clients[i].ip, '.');
             if (last_octet != NULL && strcmp(last_octet, ".5") == 0)
             {
-                if (send(clients[i].sock, buffer, len, MSG_NOSIGNAL) < 0)
+                if (send(clients[i].sock, buffer, len, MSG_NOSIGNAL | MSG_DONTWAIT) < 0)
                 {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK)
+                        continue; /* buffer full — skip */
                     printf("[CLIENT_MANAGER] Error sending to arm %s:%d - removing dead client\n",
                            clients[i].ip, clients[i].port);
                     close(clients[i].sock);
@@ -184,4 +205,29 @@ void client_manager_destroy(void)
     }
     pthread_mutex_unlock(&clients_mutex);
     printf("[CLIENT_MANAGER] All clients disconnected\n");
+}
+
+void client_manager_print_rtt(void)
+{
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < MAX_CLIENTS; i++)
+    {
+        if (clients[i].active && clients[i].sock != -1)
+        {
+            struct tcp_info info;
+            socklen_t len = sizeof(info);
+            if (getsockopt(clients[i].sock, IPPROTO_TCP, TCP_INFO, &info, &len) == 0)
+            {
+                double rtt = (double)info.tcpi_rtt / 1000.0;
+                printf("[LATENCY] ESP32 client %s:%d | TCP RTT = %.3f ms\n",
+                       clients[i].ip, clients[i].port, rtt);
+            }
+            else
+            {
+                printf("[LATENCY] ESP32 client %s:%d | Failed to get TCP RTT\n",
+                       clients[i].ip, clients[i].port);
+            }
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
 }

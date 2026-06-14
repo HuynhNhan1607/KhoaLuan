@@ -22,6 +22,7 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+#include "docking.h"
 
 #define QUEUE_SIZE 100
 #define MAX_JSON_SIZE 512
@@ -1170,22 +1171,16 @@ void parse_json_message(const char *json_str, int length)
           printf("[GRIP] Scheduled time: %.3f\n", scheduled_time);
         }
 
-        // Get current robot position from EKF
-        extern ekf_t g_ekf;
-        extern pthread_mutex_t g_ekf_mutex;
+        // === HARDCODED GRIP: object is directly ahead at fixed distance ===
+        // No position/EKF calculation needed - just use default arm coordinates
+        double arm_x = 0.0;
+        double arm_y = (double)DOCK_FIXED_GRIP_DISTANCE_MM;
+        double arm_z = DEFAULT_GRIP_HEIGHT;
 
-        pthread_mutex_lock(&g_ekf_mutex);
-        double robot_x = g_ekf.x[0];
-        double robot_y = g_ekf.x[1];
-        double robot_theta = g_ekf.x[4]; // theta in radians
-        pthread_mutex_unlock(&g_ekf_mutex);
+        printf("[GRIP] Hardcoded arm pick: X=%.1f Y=%.1f Z=%.1f mm\n",
+               arm_x, arm_y, arm_z);
 
-        printf("[GRIP] Robot EKF: pos(%.3f, %.3f) theta=%.2f rad\n", robot_x,
-               robot_y, robot_theta);
-
-        // Execute grip
-        bool success = arm_execute_grip(robot_x, robot_y, robot_theta, obj_x,
-                                        obj_y, obj_length, obj_width, side);
+        bool success = arm_pick(arm_x, arm_y, arm_z);
 
         // Lock transport offset for Virtual Structure mode (Phase 2)
         // centroid = object center position
@@ -1243,22 +1238,15 @@ void parse_json_message(const char *json_str, int length)
         printf("[PLACE] Object: pos(%.3f, %.3f) size(%.2f x %.2f) side=%s\n",
                obj_x, obj_y, obj_length, obj_width, side);
 
-        // Get current robot position from EKF
-        extern ekf_t g_ekf;
-        extern pthread_mutex_t g_ekf_mutex;
+        // === HARDCODED PLACE: object is directly ahead at fixed distance ===
+        double arm_x = 0.0;
+        double arm_y = (double)DOCK_FIXED_GRIP_DISTANCE_MM;
+        double arm_z = DEFAULT_GRIP_HEIGHT;
 
-        pthread_mutex_lock(&g_ekf_mutex);
-        double robot_x = g_ekf.x[0];
-        double robot_y = g_ekf.x[1];
-        double robot_theta = g_ekf.x[4]; // theta in radians
-        pthread_mutex_unlock(&g_ekf_mutex);
+        printf("[PLACE] Hardcoded arm place: X=%.1f Y=%.1f Z=%.1f mm\n",
+               arm_x, arm_y, arm_z);
 
-        printf("[PLACE] Robot EKF: pos(%.3f, %.3f) theta=%.2f rad\n", robot_x,
-               robot_y, robot_theta);
-
-        // Execute place
-        bool success = arm_execute_place(robot_x, robot_y, robot_theta, obj_x,
-                                         obj_y, obj_length, obj_width, side);
+        bool success = arm_place(arm_x, arm_y, arm_z);
 
         // End transport mode after placing
         if (success)
@@ -1285,6 +1273,41 @@ void parse_json_message(const char *json_str, int length)
         send_to_upstream_server(err, strlen(err));
       }
     }
+
+    // ========== START DOCKING (for testing VL53L0X docking independently) ==========
+#if ENABLE_DOCKING
+    if (cmd_json && cJSON_IsString(cmd_json) &&
+        strcmp(cmd_json->valuestring, "start_docking") == 0)
+    {
+      printf("[DOCKING] Received start_docking test command from laptop\n");
+
+      if (docking_is_active())
+      {
+        printf("[DOCKING] Docking already active — resetting\n");
+        docking_stop();
+      }
+
+      docking_start();
+
+      const char *result =
+          "{\"type\":\"control\",\"status\":\"docking_started\","
+          "\"cmd\":\"start_docking_result\"}\n";
+      send_to_upstream_server(result, strlen(result));
+    }
+
+    // Stop docking test
+    if (cmd_json && cJSON_IsString(cmd_json) &&
+        strcmp(cmd_json->valuestring, "stop_docking") == 0)
+    {
+      printf("[DOCKING] Received stop_docking command from laptop\n");
+      docking_stop();
+
+      const char *result =
+          "{\"type\":\"control\",\"status\":\"docking_stopped\","
+          "\"cmd\":\"stop_docking_result\"}\n";
+      send_to_upstream_server(result, strlen(result));
+    }
+#endif // ENABLE_DOCKING
   }
   cJSON_Delete(json);
 }

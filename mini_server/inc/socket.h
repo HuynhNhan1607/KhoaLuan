@@ -27,4 +27,5 @@ laptop_server_thread(void *arg); // Server for laptop (previously client_thread)
 void send_to_upstream_server(const char *buffer, int length);
 void send_to_laptop_clients(const char *buffer, int length);
 void client_manager_broadcast(const char *buffer, int length);
+void *latency_monitor_thread(void *arg);
 #endif // SOCKET_H

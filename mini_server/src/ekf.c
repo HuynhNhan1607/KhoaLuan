@@ -266,7 +266,7 @@ bool ekf_update_pos_xy(ekf_t *ekf, double zx, double zy, double Rx, double Ry,
     1, 0, 0, 0, 0,
     0, 1, 0, 0, 0
   };
-  // clang-format on
+
   double yv[2] = {zx - ekf->x[0], zy - ekf->x[1]};
 
   double HP[2 * 5] = {0};
