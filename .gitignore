@@ -35,3 +35,7 @@ robot1.bin
 robot2.bin
 **/robot1.bin
 **/robot2.bin
+
+# Agent rules config
+.agent/
+**/.agent/
